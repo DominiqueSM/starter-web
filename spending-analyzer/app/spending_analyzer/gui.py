@@ -12,8 +12,11 @@ from tkinter import filedialog, messagebox, ttk
 
 from .categorize import NON_SPENDING, Categorizer
 from .extract import process_folder
-from .insights import analyze, money
+from .insights import analyze, money, summarize_groups
 from .report import export_csv, export_html
+
+ALL_FOLDERS = "All folders"
+TOP_LEVEL = "(files not in a subfolder)"
 
 APP_NAME = "Spending Analyzer"
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".spending_analyzer")
@@ -89,6 +92,12 @@ class App:
         ttk.Button(top, text="Browse...", command=self.browse).pack(side="left")
         self.analyze_btn = ttk.Button(top, text="Analyze", command=self.start_analysis)
         self.analyze_btn.pack(side="left", padx=(6, 0))
+        ttk.Label(top, text="Show:").pack(side="left", padx=(14, 4))
+        self.group_var = tk.StringVar(value=ALL_FOLDERS)
+        self.group_combo = ttk.Combobox(top, textvariable=self.group_var, state="readonly", width=24,
+                                        values=[ALL_FOLDERS])
+        self.group_combo.pack(side="left")
+        self.group_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh())
 
         bar = ttk.Frame(self.root, padding=(10, 0, 10, 6))
         bar.pack(fill="x")
@@ -106,6 +115,7 @@ class App:
         self._build_suggestions()
         self._build_transactions()
         self._build_recurring()
+        self._build_groups()
         self._build_files()
 
     def _build_overview(self):
@@ -187,8 +197,8 @@ class App:
         ttk.Button(ctl, text="Set category...", command=self.set_category_dialog).pack(side="right")
         ttk.Button(ctl, text="Exclude / include", command=self.toggle_exclude).pack(side="right", padx=4)
         ttk.Button(ctl, text="Flip in/out", command=self.toggle_direction).pack(side="right")
-        self.tx_tree = self._tree(f, ("Date", "Description", "Category", "Amount", "In/Out", "File"),
-                                  (95, 360, 200, 100, 60, 200), {"Amount": "e", "In/Out": "center"})
+        self.tx_tree = self._tree(f, ("Date", "Description", "Category", "Amount", "In/Out", "Folder", "File"),
+                                  (95, 330, 190, 95, 55, 130, 170), {"Amount": "e", "In/Out": "center"})
         self.tx_tree.bind("<Double-1>", lambda e: self.set_category_dialog())
         self.tx_tree.tag_configure("excluded", foreground="#a0a0a0")
         self.tx_tree.tag_configure("credit", foreground="#2e9d5b")
@@ -204,8 +214,32 @@ class App:
                                    (220, 170, 100, 90, 100, 60, 100, 220),
                                    {"Amount": "e", "Per year": "e", "Times": "center"})
 
+    def _build_groups(self):
+        f = ttk.Frame(self.nb, padding=10)
+        self.nb.add(f, text="By folder")
+        ttk.Label(f, text="Each subfolder of the chosen folder is a group (e.g. one per card or account). "
+                          "Double-click a row to analyze just that folder.").pack(anchor="w", pady=(0, 6))
+        self.group_tree = self._tree(
+            f, ("Folder", "Files", "Transactions", "Spent", "Per month", "Money in", "Fees & interest",
+                "Biggest category", "Period"),
+            (190, 50, 95, 100, 90, 100, 105, 160, 180),
+            {"Files": "center", "Transactions": "center", "Spent": "e", "Per month": "e", "Money in": "e",
+             "Fees & interest": "e"})
+        self.group_tree.bind("<Double-1>", self._open_group)
+        self.group_tree.tag_configure("total", font=("TkDefaultFont", 10, "bold"))
+
+    def _open_group(self, event=None):
+        sel = self.group_tree.selection()
+        if not sel:
+            return
+        g = self.group_tree.set(sel[0], "Folder")
+        self.group_var.set(ALL_FOLDERS if g.startswith("All ") else g)
+        self.refresh()
+        self.nb.select(0)
+
     def _build_files(self):
         f = ttk.Frame(self.nb, padding=10)
+        self.files_tab = f
         self.nb.add(f, text="Files")
         self.file_tree = self._tree(f, ("File", "Status", "Pages", "Transactions", "Notes"),
                                     (320, 110, 60, 100, 420), {"Pages": "center", "Transactions": "center"})
@@ -225,6 +259,7 @@ class App:
             return
         self.settings["folder"] = folder
         self._save_settings()
+        self.scan_folder = folder
         self.analyze_btn.configure(state="disabled")
         self.status_var.set("Reading PDFs...")
         self.progress["value"] = 0
@@ -264,6 +299,14 @@ class App:
         self.analyze_btn.configure(state="normal")
         self.file_results = results
         self.transactions = [t for r in results for t in r.transactions]
+        for r in results:
+            r.group = self._group_of(r.path)
+            for t in r.transactions:
+                t.group = r.group
+        groups = sorted({r.group for r in results if r.transactions}, key=lambda g: (g == TOP_LEVEL, g.lower()))
+        self.group_combo["values"] = [ALL_FOLDERS] + groups
+        if self.group_var.get() not in self.group_combo["values"]:
+            self.group_var.set(ALL_FOLDERS)
         self.cat.apply(self.transactions)
         self._apply_saved_flags()
         n_ok = sum(1 for r in results if r.transactions)
@@ -273,8 +316,19 @@ class App:
             self.status_var.set(f"Read {len(results)} PDF(s); found {len(self.transactions)} transactions in {n_ok} file(s).")
         self.refresh()
         if results and not self.transactions:
-            self.nb.select(4)
+            self.nb.select(self.files_tab)
             messagebox.showinfo(APP_NAME, "No transactions were recognised. See the Files tab for details on each PDF.")
+
+    def _group_of(self, path):
+        rel = os.path.relpath(path, getattr(self, "scan_folder", None) or self.folder_var.get() or ".")
+        parts = rel.split(os.sep)
+        return parts[0] if len(parts) > 1 else TOP_LEVEL
+
+    def _scoped(self):
+        g = self.group_var.get()
+        if not g or g == ALL_FOLDERS:
+            return self.transactions
+        return [t for t in self.transactions if t.group == g]
 
     def _tx_key(self, t):
         return t.uid
@@ -294,8 +348,9 @@ class App:
                 t.is_credit = not t.is_credit
 
     def refresh(self):
-        self.analysis = analyze(self.transactions)
-        cats = ["All"] + sorted({t.category for t in self.transactions})
+        scoped = self._scoped()
+        self.analysis = analyze(scoped)
+        cats = ["All"] + sorted({t.category for t in scoped})
         self.cat_combo["values"] = cats
         if self.cat_filter.get() not in cats:
             self.cat_filter.set("All")
@@ -303,6 +358,7 @@ class App:
         self.fill_suggestions()
         self.fill_transactions()
         self.fill_recurring()
+        self.fill_groups()
         self.fill_files()
 
     def fill_overview(self):
@@ -344,7 +400,7 @@ class App:
         W, H = cv.winfo_width(), cv.winfo_height()
         months = a.by_month[-24:]
         mx = max(v for _, v in months) or 1
-        base, left, topm = H - 34, 10, 24
+        base, left, topm = H - 34, 10, 44
         bw = (W - 2 * left) / max(len(months), 1)
         avg = a.total_spent / a.months
         for i, (m, v) in enumerate(months):
@@ -388,7 +444,7 @@ class App:
         q = self.search_var.get().strip().lower()
         c = self.cat_filter.get()
         out = []
-        for t in self.transactions:
+        for t in self._scoped():
             if t.is_credit and not self.show_credits.get():
                 continue
             if c and c != "All" and t.category != c:
@@ -410,7 +466,7 @@ class App:
             self._tx_index[iid] = t
             tv.insert("", "end", iid=iid, tags=tags, values=(
                 t.date.isoformat(), t.description, t.category + (" (excluded)" if t.excluded else ""),
-                f"{t.amount:,.2f}", "in" if t.is_credit else "out", os.path.basename(t.source_file)))
+                f"{t.amount:,.2f}", "in" if t.is_credit else "out", t.group, os.path.basename(t.source_file)))
             if t.is_spending and t.category not in NON_SPENDING:
                 total += t.amount
         self.tx_sum_var.set(f"{len(vis)} transactions shown · spending in view: {money(total)}  "
@@ -423,6 +479,17 @@ class App:
             note = f"Price went up {money(r.price_change[0])} -> {money(r.price_change[1])}" if r.price_change else ""
             tv.insert("", "end", values=(r.merchant, r.category, r.frequency, f"{r.typical_amount:,.2f}",
                                          f"{r.monthly_cost * 12:,.2f}", r.count, r.last_date.isoformat(), note))
+
+    def fill_groups(self):
+        tv = self.group_tree
+        tv.delete(*tv.get_children())
+        if not self.transactions:
+            return
+        for g in summarize_groups(self.transactions, self.file_results, ALL_FOLDERS):
+            period = f"{g['first']:%b %Y} - {g['last']:%b %Y}" if g["first"] else "-"
+            tv.insert("", "end", tags=("total",) if g["name"] == ALL_FOLDERS else (), values=(
+                g["name"], g["files"], g["transactions"], f"{g['spent']:,.2f}", f"{g['per_month']:,.2f}",
+                f"{g['money_in']:,.2f}", f"{g['fees']:,.2f}", g["top_category"], period))
 
     def fill_files(self):
         tv = self.file_tree
@@ -535,7 +602,7 @@ class App:
         p = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="transactions.csv",
                                          filetypes=[("CSV", "*.csv")])
         if p:
-            export_csv(p, self.transactions)
+            export_csv(p, self._scoped())
             self.status_var.set(f"Saved {p}")
 
     def export_html(self):
@@ -544,7 +611,10 @@ class App:
         p = filedialog.asksaveasfilename(defaultextension=".html", initialfile="spending_report.html",
                                          filetypes=[("HTML", "*.html")])
         if p:
-            export_html(p, self.analysis, self.color)
+            g = self.group_var.get()
+            groups = summarize_groups(self.transactions, self.file_results, ALL_FOLDERS) \
+                if g == ALL_FOLDERS and len(self.group_combo["values"]) > 2 else None
+            export_html(p, self.analysis, self.color, scope=None if g == ALL_FOLDERS else g, groups=groups)
             self.status_var.set(f"Saved {p}")
             if messagebox.askyesno(APP_NAME, "Report saved. Open it now in your browser? (It is a local file.)"):
                 webbrowser.open("file://" + os.path.abspath(p))

@@ -51,6 +51,18 @@ Or from a terminal in this folder:  python3 app/main.py
 
   Try it first with the "sample-statements (fake data)" folder.
 
+Grouping with subfolders (e.g. one per card or account):
+  Statements\Visa card\...   Statements\Checking\...   Statements\Savings\...
+  Pick the top folder ("Statements") and everything inside is read; deeper
+  folders like Visa card\2025 count as part of "Visa card".
+  * "By folder" tab: spending, money in, fees and top category per folder,
+    side by side. Double-click a row to analyze just that folder.
+  * "Show:" box (top right): switch every tab, the suggestions and the
+    exports between "All folders" and a single folder.
+  * The Transactions tab and the CSV export include a Folder column.
+  * Tip: if you pay your card from checking, that payment is recognised as
+    a transfer, so "All folders" doesn't count the spending twice.
+
 Fixing things up (this improves the suggestions):
   * Wrong category?  Double-click the transaction (or select several and click
     "Set category..."). The app remembers it for that merchant from then on.

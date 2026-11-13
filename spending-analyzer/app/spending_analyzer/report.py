@@ -11,13 +11,14 @@ from .insights import money
 def export_csv(path: str, transactions):
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["Date", "Description", "Merchant", "Category", "Amount", "Direction", "Excluded", "Source file"])
+        w.writerow(["Date", "Description", "Merchant", "Category", "Amount", "Direction", "Excluded", "Folder",
+                    "Source file"])
         for t in sorted(transactions, key=lambda t: t.date):
             w.writerow([t.date.isoformat(), t.description, t.merchant, t.category, f"{t.amount:.2f}",
-                        "in" if t.is_credit else "out", "yes" if t.excluded else "", t.source_file])
+                        "in" if t.is_credit else "out", "yes" if t.excluded else "", t.group, t.source_file])
 
 
-def export_html(path: str, a, palette):
+def export_html(path: str, a, palette, scope=None, groups=None):
     e = html.escape
     max_cat = max((v for _, v in a.by_category), default=1) or 1
     max_mon = max((v for _, v in a.by_month), default=1) or 1
@@ -45,6 +46,18 @@ def export_html(path: str, a, palette):
         for m, v, n in a.top_merchants[:15])
 
     period = f"{a.first_date} to {a.last_date}" if a.first_date else "n/a"
+    if scope:
+        period = f"Folder: {scope} · " + period
+    group_html = ""
+    if groups:
+        group_html = ("<h2>By folder</h2><table><tr><th>Folder</th><th class=num>Transactions</th>"
+                      "<th class=num>Spent</th><th class=num>Per month</th><th class=num>Money in</th>"
+                      "<th class=num>Fees &amp; interest</th><th>Biggest category</th></tr>" + "".join(
+                          f"<tr{' style=font-weight:600' if i == 0 else ''}><td>{e(g['name'])}</td>"
+                          f"<td class=num>{g['transactions']}</td><td class=num>{money(g['spent'])}</td>"
+                          f"<td class=num>{money(g['per_month'])}</td><td class=num>{money(g['money_in'])}</td>"
+                          f"<td class=num>{money(g['fees'])}</td><td>{e(g['top_category'])}</td></tr>"
+                          for i, g in enumerate(groups)) + "</table>")
     doc = f"""<!doctype html><html><head><meta charset="utf-8"><title>Spending Report</title>
 <style>
 :root{{--bg:#f6f7f9;--fg:#1d2330;--muted:#5d6676;--card:#fff;--line:#e3e6eb;--accent:#2f6fde}}
@@ -68,6 +81,7 @@ h2{{margin-top:32px}}
 <div class="kpi"><span class="muted">Money in</span><b>{money(a.total_in)}</b></div>
 <div class="kpi"><span class="muted">Possible savings</span><b>{money(a.potential_monthly_savings)}/mo</b></div>
 </div>
+{group_html}
 <h2>What you could cut back on</h2>{sugg or "<p>No suggestions.</p>"}
 <h2>Spending by category</h2><table><tr><th>Category</th><th></th><th class="num">Total</th><th class="num">Per month</th><th class="num">Share</th></tr>{cat_rows}</table>
 <h2>Spending by month</h2><table>{mon_rows}</table>

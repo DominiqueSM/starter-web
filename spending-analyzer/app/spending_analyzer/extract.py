@@ -25,6 +25,7 @@ class Transaction:
     excluded: bool = False
     year_guessed: bool = False
     uid: str = ""
+    group: str = ""          # top-level subfolder the PDF came from
 
     @property
     def is_spending(self) -> bool:
@@ -38,6 +39,7 @@ class FileResult:
     pages: int = 0
     transactions: list = field(default_factory=list)
     note: str = ""
+    group: str = ""
 
 
 MONTHS = {

@@ -56,8 +56,8 @@ def _ym(d: date) -> str:
 
 
 def _months_span(first: date, last: date) -> float:
-    days = (last - first).days + 1
-    return max(1.0, days / 30.44)
+    # Statements cover whole calendar months, so count the months from first to last
+    return float((last.year - first.year) * 12 + last.month - first.month + 1)
 
 
 def money(x: float) -> str:
@@ -343,3 +343,26 @@ def build_suggestions(a: Analysis) -> list[Suggestion]:
 
     S.sort(key=lambda s: (s.priority, -s.monthly_savings))
     return S
+
+
+def summarize_groups(transactions, file_results, all_label="All folders") -> list[dict]:
+    """Per-folder totals, plus an 'all' row at the top."""
+    by_group = defaultdict(list)
+    for t in transactions:
+        by_group[t.group].append(t)
+    files = defaultdict(int)
+    for r in file_results:
+        if r.status != "duplicate":
+            files[getattr(r, "group", "")] += 1
+
+    def row(name, txs, nfiles):
+        a = analyze(txs)
+        fees = sum(v for c, v in a.by_category if c == "Fees & Interest")
+        return {"name": name, "files": nfiles, "transactions": len(txs), "spent": a.total_spent,
+                "per_month": a.total_spent / a.months if a.spending else 0.0, "money_in": a.total_in,
+                "fees": fees, "top_category": a.by_category[0][0] if a.by_category else "-",
+                "first": a.first_date, "last": a.last_date}
+
+    rows = [row(g, txs, files[g]) for g, txs in by_group.items()]
+    rows.sort(key=lambda r: -r["spent"])
+    return [row(all_label, transactions, sum(files.values()))] + rows
