@@ -8,7 +8,7 @@ APP_ID = "spending-analyzer"
 VERSION = 1
 # settings that are your choices (window size and the last folder are not)
 CHOICE_KEYS = ["excluded", "direction_flips", "tx_categories", "not_duplicates", "include_files", "budgets",
-               "tag_rules", "debts", "debt_extra", "debt_strategy", "date_order"]
+               "tag_rules", "debts", "debt_extra", "debt_strategy", "date_order", "pay_sources"]
 
 
 def make_backup(settings: dict, categorizer) -> dict:

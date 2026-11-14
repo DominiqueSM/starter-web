@@ -492,6 +492,10 @@ class PlanningPages:
                 t = by_uid.get(uid)
                 items.append(dict(kind=key, key=uid, type=label, match=f"{t.date} {t.description}" if t else uid,
                                   result=res, count=1 if t else 0))
+        for m, yes in sorted(self.settings.get("pay_sources", {}).items()):
+            items.append(dict(kind="pay_sources", key=m, type="Job income (savings rate)", match=m,
+                              result="counts as job pay" if yes else "not job pay",
+                              count=sum(1 for t in txs if t.merchant == m and t.is_credit)))
         names = {r.sha1: os.path.basename(r.path) for r in self.file_results}
         for sha in self.settings.get("include_files", []):
             items.append(dict(kind="include_files", key=sha, type="Included non-statement file",
@@ -568,6 +572,8 @@ class PlanningPages:
                 self.cat.remove_rule(it["key"])
             elif k == "tx_cat":
                 self.settings.get("tx_categories", {}).pop(it["key"], None)
+            elif k == "pay_sources":
+                self.settings.get("pay_sources", {}).pop(it["key"], None)
             elif k in ("excluded", "direction_flips", "not_duplicates", "include_files"):
                 self.settings[k] = [x for x in self.settings.get(k, []) if x != it["key"]]
         rules = self.settings.get("tag_rules", [])

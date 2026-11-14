@@ -235,18 +235,37 @@ def find_recurring(spending) -> list[Recurring]:
 
 # ------------------------------------------------------------------ main
 
+# Pay from a job, as opposed to other income (interest, dividends, tax refunds, deposits)
+PAY_RE = re.compile(r"PAYROLL|\bDIR(ECT)?\s?DEP|SALARY|PAYCHECK|\bWAGES\b|\bADP\b|GUSTO|PAYCHEX|INTUIT\s?PAYROLL|"
+                    r"\bNET\s?PAY\b|\bPR\s?PAYMENT|TRINET|JUSTWORKS|RIPPLING|\bWORKDAY\b|\bPAYCOM\b|PAYLOCITY|"
+                    r"\bUSPS\s?PAYROLL|DFAS|\bREG\.?\s?SALARY", re.I)
+
+
+def is_pay(t, pay_sources=None) -> bool:
+    """Job income: your choice for this payer if you made one, else pay-like wording on money in."""
+    if not t.is_credit:
+        return False
+    if pay_sources and t.merchant in pay_sources:
+        return bool(pay_sources[t.merchant])
+    return t.category == "Income" and bool(PAY_RE.search(t.description))
+
+
 def _savings(cashflow, compare):
-    """(money in - spent) / money in over the last 3 full months that have bank statements."""
+    """Savings rate over the last 3 full months that have bank statements, two ways:
+    of all money in, and of job pay only."""
     for r in cashflow:
-        r["rate"] = (r["money_in"] - r["spent"]) / r["money_in"] if r["has_bank"] and r["money_in"] > 0 else None
+        ok = r["has_bank"]
+        r["rate"] = (r["money_in"] - r["spent"]) / r["money_in"] if ok and r["money_in"] > 0 else None
+        r["pay_rate"] = (r["pay"] - r["spent"]) / r["pay"] if ok and r["pay"] > 0 else None
     if not compare:
         return None
     months = compare["months"][-3:]
     rows = [r for r in cashflow if r["month"] in months]
-    inn, out = sum(r["money_in"] for r in rows), sum(r["spent"] for r in rows)
+    inn, out, pay = (sum(r[k] for r in rows) for k in ("money_in", "spent", "pay"))
     if inn <= 0:
         return None
-    return {"rate": (inn - out) / inn, "months": months, "money_in": inn, "spent": out, "saved": inn - out}
+    return {"rate": (inn - out) / inn, "months": months, "money_in": inn, "spent": out, "saved": inn - out,
+            "pay": pay, "pay_rate": (pay - out) / pay if pay > 0 else None}
 
 
 REFUND_RE = re.compile(r"\b(REFUND|RETURN|REVERSAL|REVERSED|CREDIT ADJ|ADJUSTMENT|CHARGEBACK|DISPUTE|RETURNED)\b", re.I)
@@ -285,7 +304,8 @@ def _covered(ym: str, spans) -> bool:
     return len(days) >= 0.9 * ((hi - lo).days + 1)
 
 
-def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None, gaps=None) -> Analysis:
+def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None, gaps=None,
+            pay_sources=None) -> Analysis:
     """coverage: optional list of (kind, start_date, end_date), one per statement, used to compare only
     months that the statements cover completely."""
     live = [t for t in transactions if not t.excluded and not t.duplicate]
@@ -352,6 +372,8 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
         if t.is_credit:
             if t in money_in_txs:
                 rows[ym]["income" if t.category == "Income" else "other_in"] += t.amount
+                if is_pay(t, pay_sources):
+                    rows[ym]["pay"] += t.amount
             elif t in refunds:
                 rows[ym]["refunds"] += t.amount
             elif t.category in NOT_MONEY_IN:
@@ -368,7 +390,7 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
     for ym in sorted(set(rows) | set(mon)):
         r = rows[ym]
         cashflow.append({"month": ym, "income": r["income"], "other_in": r["other_in"],
-                         "money_in": r["income"] + r["other_in"], "spent": mon.get(ym, 0.0),
+                         "money_in": r["income"] + r["other_in"], "spent": mon.get(ym, 0.0), "pay": r["pay"],
                          "spent_card": r["spent_card"], "spent_bank": r["spent_bank"], "refunds": r["refunds"],
                          "card_payments": r["card_payments"], "transfers": r["transfers"], "saved": r["saved"],
                          "moved_in": r["moved_in"],
@@ -498,7 +520,9 @@ def build_suggestions(a: Analysis, all_txs) -> list[Suggestion]:
                 "Spending vs. money coming in",
                 f"You spend {ratio:.0%} of what comes in ({money(out)} of {money(inn)} a month over {n} month(s)), "
                 f"leaving about {money(inn - out)}/month.{left} "
-                + (f"Savings rate over the last {len(a.savings['months'])} full month(s): {a.savings['rate']:.0%}. "
+                + (f"Over the last {len(a.savings['months'])} full month(s) you saved {a.savings['rate']:.0%} of "
+                   f"all money in" + (f" and {a.savings['pay_rate']:.0%} of your job pay"
+                                      if a.savings.get("pay_rate") is not None else "") + ". "
                    if a.savings else "") + "A common target is saving at least 20%.",
                 priority=3, kind="info", confidence=_confidence(a, "medium"), items=items))
 

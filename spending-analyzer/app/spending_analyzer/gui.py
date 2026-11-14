@@ -500,31 +500,32 @@ class App(PlanningPages):
         page.rowconfigure(4, weight=2)
         so, self.cf_summary = T.card(page, padding=16)
         so.grid(row=0, column=0, sticky="ew")
-        tk.Label(page, text="Only whole months covered by your statements are compared (others are greyed out). "
-                            "* Moved in / card payments / transfers / savings are money between your own accounts. "
-                            "Card payments, transfers between your accounts and money moved to savings are shown "
-                            "but not counted as spending. Refunds are subtracted from spending. Money from a person (e.g. "
-                            "Zelle) counts as money in; if it's their share of bills, set its category to "
-                            "'Shared bills (paid back)' and it lowers your spending instead.",
+        tk.Label(page, text="Only whole months covered by your statements are compared (greyed-out months aren't). "
+                            "Columns marked * are money between your own accounts, not spending. Refunds are "
+                            "subtracted from spending. Money from a person (e.g. Zelle) counts as money in; if it's "
+                            "their share of bills, set its category to 'Shared bills (paid back)' to lower your "
+                            "spending instead. Choose what counts as job pay under 'Where money in came from'.",
                  bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], justify="left", anchor="w",
                  wraplength=1000).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         outer, self.cf_tree = self._table(page, [
-            ("Month", "Month", 72, "w", False), ("In", "Money in", 85, "e", False),
-            ("Pay", "of which pay", 84, "e", False), ("MovedIn", "Moved in*", 76, "e", False),
-            ("Spent", "Spent", 85, "e", False),
-            ("Cards", "on cards", 75, "e", False), ("Bank", "from bank", 78, "e", False),
-            ("Net", "Left over", 85, "e", False), ("Rate", "Saved %", 66, "e", False),
-            ("Refunds", "Refunds", 70, "e", False), ("CardPay", "Card pmts*", 80, "e", False),
-            ("Transfers", "Transfers*", 80, "e", False), ("Saved", "Savings*", 72, "e", False),
-            ("Note", "", 60, "w", True)])
+            ("Month", "Month", 66, "w", False), ("In", "Money in", 80, "e", False),
+            ("Pay", "Job pay", 76, "e", False), ("MovedIn", "Moved in*", 72, "e", False),
+            ("Spent", "Spent", 80, "e", False), ("Cards", "on cards", 70, "e", False),
+            ("Bank", "from bank", 76, "e", False), ("Net", "Left over", 80, "e", False),
+            ("Rate", "Saved %", 58, "e", False), ("PayRate", "% of pay", 62, "e", False),
+            ("Refunds", "Refunds", 64, "e", False), ("CardPay", "Card pmts*", 76, "e", False),
+            ("Transfers", "Transfers*", 74, "e", False), ("Saved", "Savings*", 68, "e", True)])
         outer.grid(row=2, column=0, sticky="nsew")
         bottom = tk.Frame(page, bg=T.BG)
         bottom.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
         bottom.columnconfigure(0, weight=1, uniform="cf")
         bottom.columnconfigure(1, weight=1, uniform="cf")
         bottom.rowconfigure(1, weight=1)
-        tk.Label(bottom, text="Where money in came from", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).grid(
-            row=0, column=0, sticky="w", pady=(0, 6))
+        hdr = tk.Frame(bottom, bg=T.BG)
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 6), padx=(0, 6))
+        tk.Label(hdr, text="Where money in came from", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).pack(side="left")
+        T.Button(hdr, "Job income: yes / no", self.toggle_pay_source, font=T.FONTS["small"] + ("bold",),
+                 pady=3).pack(side="right")
         tk.Label(bottom, text="* Not counted as spending", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).grid(
             row=0, column=1, sticky="w", pady=(0, 6), padx=(12, 0))
         o1, self.cf_in = self._table(bottom, [("From", "From", 140, "w", True), ("Type", "Counted as", 170, "w", False),
@@ -563,36 +564,42 @@ class App(PlanningPages):
             inn, out = c["money_in"] / n, c["spent"] / n
             for label, val, col in [("Money in / month", money(inn), T.TEXT), ("Spent / month", money(out), T.TEXT),
                                     ("Left over / month", money(inn - out), T.GOOD if inn >= out else T.BAD)] + (
-                    [(f"Savings rate · last {len(a.savings['months'])} full mo.", f"{a.savings['rate']:.0%}",
+                    [(f"Saved of all money in", f"{a.savings['rate']:.0%}",
                       T.GOOD if a.savings["rate"] >= 0.2 else (T.WARN if a.savings["rate"] >= 0 else T.BAD))]
-                    if a.savings else []):
+                    if a.savings else []) + (
+                    [("Saved of job pay", f"{a.savings['pay_rate']:.0%}",
+                      T.GOOD if a.savings["pay_rate"] >= 0.2 else (T.WARN if a.savings["pay_rate"] >= 0 else T.BAD))]
+                    if a.savings and a.savings.get("pay_rate") is not None else []):
                 box = tk.Frame(row, bg=T.SURFACE)
-                box.pack(side="left", padx=(0, 36))
+                box.pack(side="left", padx=(0, 30))
                 tk.Label(box, text=label.upper(), bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["tiny"] + ("bold",)).pack(anchor="w")
                 tk.Label(box, text=val, bg=T.SURFACE, fg=col, font=T.FONTS["kpi"]).pack(anchor="w")
             note = f"Compared over {n} month(s): {c['months'][0]} to {c['months'][-1]}"
+            if a.savings:
+                note += (f" \u00B7 savings rates use the last {len(a.savings['months'])} full month(s); job pay = "
+                         f"{money(a.savings['pay'] / len(a.savings['months']))}/month (set what counts below)")
             if c["left_out"]:
                 note += f" · {len(c['left_out'])} partly covered month(s) left out"
             tk.Label(self.cf_summary, text=note, bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["small"],
-                     anchor="w").pack(anchor="w", pady=(8, 0))
+                     anchor="w", justify="left", wraplength=960).pack(anchor="w", pady=(8, 0))
         else:
             tk.Label(row, text="No bank statements found, so there's no money-in to compare with. Add your "
                                "checking account statements.", bg=T.SURFACE, fg=T.WARN, font=T.FONTS["body"]).pack(anchor="w")
         f = lambda v: f"{v:,.2f}" if v else ""
         for i, r in enumerate(a.cashflow):
             tags = [] if r["has_bank"] else ["muted"]
-            note = "" if r["has_bank"] else ("partial month" if r.get("partial") else "card only")
             if r["has_bank"] and r["spent"] > r["money_in"]:
                 tags.append("bad")
             if i % 2:
                 tags.append("odd")
             net = r["money_in"] - r["spent"]
             self.cf_tree.insert("", "end", tags=tags, values=(
-                r["month"], f(r["money_in"]), f(r["income"]), f(r.get("moved_in", 0)), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
+                r["month"], f(r["money_in"]), f(r.get("pay", 0)), f(r.get("moved_in", 0)), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
                 f"{net:,.2f}" if r["has_bank"] else "", f"{r['rate']:.0%}" if r.get("rate") is not None else "",
-                f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]), f(r["saved"]), note))
+                f"{r['pay_rate']:.0%}" if r.get("pay_rate") is not None else "",
+                f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]), f(r["saved"])))
         from collections import defaultdict as dd
-        from .insights import NOT_MONEY_IN, _is_refund
+        from .insights import NOT_MONEY_IN, _is_refund, is_pay
         live = [t for t in self._scoped() if not t.excluded and not t.duplicate]
         ins, outs = dd(lambda: [0, 0.0, ""]), dd(lambda: [0, 0.0, ""])
         for t in live:
@@ -605,7 +612,8 @@ class App(PlanningPages):
             elif t.is_credit and t.category not in NOT_MONEY_IN and t.kind != "card" and not _is_refund(t):
                 k = ins[t.merchant]
                 k[0] += 1; k[1] += t.amount
-                k[2] = ("Pay / income" if t.category == "Income" else
+                k[2] = ("Job income" if is_pay(t, self.settings.get("pay_sources")) else
+                        "Other income" if t.category == "Income" else
                         "From a person" if t.category == "Zelle / Venmo / Cash App" else "Other money in")
             elif not t.is_credit and t.category in NON_SPENDING:
                 k = outs[t.merchant]
@@ -615,6 +623,22 @@ class App(PlanningPages):
         for tv, data in ((self.cf_in, ins), (self.cf_out, outs)):
             for i, (m, (n, tot, why)) in enumerate(sorted(data.items(), key=lambda kv: -kv[1][1])):
                 tv.insert("", "end", tags=["odd"] if i % 2 else [], values=(m, why, n, f"{tot:,.2f}"))
+
+    def toggle_pay_source(self):
+        """Count (or stop counting) the selected money-in sources as job income. Remembered per payer."""
+        from .insights import is_pay
+        sel = self.cf_in.selection()
+        if not sel:
+            messagebox.showinfo(APP_NAME, "Select a payer under 'Where money in came from' first.")
+            return
+        ps = self.settings.setdefault("pay_sources", {})
+        for iid in sel:
+            m = self.cf_in.set(iid, "From")
+            now = any(is_pay(t, ps) for t in self.transactions if t.merchant == m)
+            ps[m] = not now
+        self._save_settings()
+        self.refresh()
+        self.show_page("cashflow")
 
     # ================================================================ insights
     def _build_insights(self, page):
@@ -1225,7 +1249,8 @@ class App(PlanningPages):
                 coverage.append((r.info.kind, r.info.period_start or min(ds), r.info.period_end or max(ds),
                                  r.info.account_key or f"{r.group}|{r.info.kind}"))
         self.gaps = missing_statements(self._scoped_files())
-        self.analysis = analyze(scoped, quality, coverage, budgets=self.settings.get("budgets"), gaps=self.gaps)
+        self.analysis = analyze(scoped, quality, coverage, budgets=self.settings.get("budgets"), gaps=self.gaps,
+                                pay_sources=self.settings.get("pay_sources"))
         tags = ["All tags"] + sorted({g for t in scoped for g in t.tags})
         self.tag_combo["values"] = tags
         if self.tag_filter.get() not in tags:

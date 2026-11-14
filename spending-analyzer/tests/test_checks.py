@@ -89,6 +89,31 @@ class SavingsRate(unittest.TestCase):
         self.assertAlmostEqual(next(r for r in a.cashflow if r["month"] == "2026-01")["rate"], 0.4)
 
 
+class JobPaySavingsRate(unittest.TestCase):
+    def build(self, pay_sources=None):
+        txs = []
+        for m in ("01", "02", "03"):
+            txs += [tx(f"2026-{m}-01", "ACME CORP PAYROLL PPD", 2000, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-15", "ACME CORP PAYROLL PPD", 2000, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-20", "Zelle Payment From Jane Doe", 1000, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-28", "INTEREST PAID", 5, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-05", "KROGER #622", 3000, src=f"{m}.pdf")]
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        return analyze(txs, pay_sources=pay_sources)
+
+    def test_two_rates(self):
+        s = self.build().savings
+        self.assertAlmostEqual(s["rate"], (15015 - 9000) / 15015)    # all money in
+        self.assertAlmostEqual(s["pay"], 12000)                       # only the paychecks
+        self.assertAlmostEqual(s["pay_rate"], (12000 - 9000) / 12000)
+
+    def test_you_decide_what_counts_as_pay(self):
+        s = self.build({"Jane Doe": True, "Acme Payroll": True}).savings   # e.g. a side job paid by Zelle
+        self.assertAlmostEqual(s["pay"], 15000)
+        s = self.build({"Acme Payroll": False}).savings
+        self.assertIsNone(s["pay_rate"])
+
+
 class Coverage(unittest.TestCase):
     def test_month_missing_one_accounts_statement_is_not_compared(self):
         txs = []

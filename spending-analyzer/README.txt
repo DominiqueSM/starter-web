@@ -44,8 +44,11 @@ repository > Actions tab > "Spending Analyzer - test and build" > latest run > A
   2. The analysis runs straight away (click Analyze to run it again).
   3. Pages (left side):
        Overview         totals, where the money goes, monthly chart (hover for details)
-       Cash flow        money in vs. spent, month by month, your savings rate over the last 3
-                        full months, and exactly what was counted
+       Cash flow        money in vs. spent, month by month, and exactly what was counted. Two
+                        savings rates over the last 3 full months: of ALL money in, and of your
+                        JOB PAY only. Pay is recognised from payroll wording (PAYROLL, DIRECT DEP,
+                        SALARY, ADP, Gusto...); under "Where money in came from" select a payer
+                        and click "Job income: yes / no" to change what counts (remembered).
                         and what wasn't (card payments, transfers, savings). Start here if a
                         total looks wrong.
        Cut back         ranked suggestions with estimated savings and confidence
