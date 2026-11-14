@@ -138,6 +138,10 @@ def find_recurring(spending) -> list[Recurring]:
         txs = uniq
         if len(txs) < 2:
             continue
+        # A real recurring charge shows up on separate statements in different months. One document that
+        # lists many dated rows (a hotel bill, a loan's payment history) must not look like a subscription.
+        if len({t.source_file for t in txs}) < 2 or len({_ym(t.date) for t in txs}) < 2:
+            continue
         cat = max({t.category for t in txs}, key=lambda c: sum(1 for t in txs if t.category == c))
         if cat in ("Fees & Interest", "Cash & ATM"):
             continue

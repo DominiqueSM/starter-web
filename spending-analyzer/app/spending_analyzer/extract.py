@@ -29,6 +29,7 @@ class FileResult:
     method: str = ""
     sha1: str = ""
     duplicates_removed: int = 0
+    held: list = field(default_factory=list)   # rows from a non-statement document, not counted unless included
 
 
 def file_hash(path: str) -> str:
@@ -114,7 +115,7 @@ def parse_file(path: str, sha: str, order_pref="auto", password=None, cache_dir=
         fr.pages, fr.method, fr.status, fr.note = cached["pages"], cached["method"], cached["status"], cached["note"]
         for t in fr.transactions:
             t.source_file = path
-        return fr
+        return _hold_if_not_statement(fr)
     try:
         lines, fr.pages, fr.method = extract_lines(path, password)
     except PasswordRequired as e:
@@ -135,8 +136,19 @@ def parse_file(path: str, sha: str, order_pref="auto", password=None, cache_dir=
         fr.note = "Text found, but no rows that look like 'date  description  amount'. See the line preview."
     elif any(t.year_guessed for t in fr.transactions):
         fr.note = "Statement period not found; year taken from the file's date."
+    elif fr.info.doc_type == "other" and fr.info.recon_status not in ("reconciled", "balance-verified"):
+        fr.status = "not-statement"
+        fr.note = (f"Looks like {fr.info.doc_reason}, not a bank or card statement, so it's skipped: the same "
+                   "charges are already on your statements and would be counted twice. Use 'Include anyway' "
+                   "if this is a real statement.")
     if not password:   # don't cache contents of password-protected files
         _cache_save(cache_dir, sha, order_pref, fr)
+    return _hold_if_not_statement(fr)
+
+
+def _hold_if_not_statement(fr: FileResult) -> FileResult:
+    if fr.status == "not-statement":
+        fr.held, fr.transactions = fr.transactions, []
     return fr
 
 

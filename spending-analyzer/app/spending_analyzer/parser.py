@@ -19,7 +19,7 @@ from datetime import date, timedelta
 
 from .pdftext import Line
 
-PARSER_VERSION = 5
+PARSER_VERSION = 6
 
 # ---------------------------------------------------------------- data classes
 
@@ -69,6 +69,8 @@ class StatementInfo:
     balance_checks: int = 0
     balance_fails: int = 0
     account_type: str = ""            # "savings" | "checking" | ""
+    doc_type: str = "statement"       # "statement" | "other" (receipt, hotel folio, invoice, loan statement...)
+    doc_reason: str = ""
 
     @property
     def account_key(self) -> str:
@@ -335,9 +337,40 @@ def _statement_info(lines: list[Line], order_pref: str) -> StatementInfo:
         if found:
             info.period_end = found[min(len(found) - 1, int(len(found) * 0.9))]
 
+    info.doc_type, info.doc_reason = _document_type(full, info)
     info.opening_balance = _find_labeled_amount(texts, OPENING_RE)
     info.closing_balance = _find_labeled_amount(texts, CLOSING_RE)
     return info
+
+
+OTHER_DOCS = [
+    ("a hotel bill", r"\bFOLIO\b|\bGUEST\b|ROOM CHARGE|\bROOM\b|ARRIVAL|DEPARTURE|CHECK[- ]?IN|CHECK[- ]?OUT|"
+                     r"NIGHTS?\b|HONORS NUMBER|RESERVATION"),
+    ("a receipt or invoice", r"\bRECEIPT\b|\bINVOICE\b|ORDER (#|NUMBER|NO)|SUBTOTAL|SALES TAX|\bTIP\b|QTY|"
+                             r"ITEM(S)?\b|SHIPPING|BILL TO|SHIP TO|THANK YOU FOR YOUR (ORDER|PURCHASE)"),
+    ("a loan statement", r"\bLOAN\b|\bPRINCIPAL\b|BORROWER|SERVICER|PAYMENT HISTORY|AMOUNT PAST DUE|"
+                         r"OUTSTANDING (PRINCIPAL|BALANCE)|INTEREST RATE|REPAYMENT PLAN|DEPT\.? OF EDUCATION"),
+    ("a bill or utility statement", r"SERVICE ADDRESS|METER|USAGE|KWH|BILLING PERIOD|PLAN CHARGES|DATA USAGE"),
+    ("a pay stub", r"PAY STUB|EARNINGS|GROSS PAY|NET PAY|DEDUCTIONS|YTD"),
+]
+
+
+def _document_type(full: str, info: "StatementInfo"):
+    """Bank/card statements vs. other PDFs whose dated amounts would double count (receipts, folios...)."""
+    up = full.upper()
+    stmt = sum([bool(info.bank), info.kind in ("card", "bank"), bool(info.last4),
+                bool(_find_labeled_amount(full.splitlines(), OPENING_RE) is not None),
+                bool(_find_labeled_amount(full.splitlines(), CLOSING_RE) is not None),
+                bool(re.search(r"DEPOSITS|WITHDRAWALS|PURCHASES|PAYMENTS AND (OTHER )?CREDITS|TRANSACTION DETAIL|"
+                               r"ACCOUNT ACTIVITY|CHECKING SUMMARY|ACCOUNT SUMMARY", up))])
+    best, best_hits = "", 0
+    for name, rx in OTHER_DOCS:
+        hits = len({m.group(0) for m in re.finditer(rx, up)})
+        if hits > best_hits:
+            best, best_hits = name, hits
+    if best_hits >= 4 or (best_hits >= 2 and stmt <= 3):
+        return "other", best
+    return "statement", ""
 
 
 @dataclass

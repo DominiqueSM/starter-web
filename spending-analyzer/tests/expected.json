@@ -73,5 +73,9 @@
     "file": "locked-statement.pdf",
     "password": "secret",
     "count": 1
-  }
+  },
+  "not_statements": [
+    "Receipts/hilton-folio.pdf",
+    "Receipts/studentaid-statement.pdf"
+  ]
 }

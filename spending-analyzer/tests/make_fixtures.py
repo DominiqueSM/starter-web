@@ -264,6 +264,38 @@ def locked():
     expected["locked"] = {"file": os.path.relpath(path, OUT), "password": "secret", "count": 1}
 
 
+def hotel_folio():
+    """A hotel bill: one dated row per night. These charges are already on the card statement."""
+    path = os.path.join(OUT, "Receipts", "hilton-folio.pdf")
+    p = Page(path)
+    p.text(40, "Hilton Garden Inn Dallas", B, 13); p.nl(16)
+    p.text(40, "GUEST FOLIO"); p.nl()
+    p.text(40, "Guest: J Smith   Room: 412   Honors Number: 123456789"); p.nl()
+    p.text(40, "Arrival: 01/03/26   Departure: 01/08/26   Nights: 5"); p.nl(18)
+    p.text(40, "Date", B); p.text(110, "Description", B); p.text(560, "Amount", B, right=True); p.nl()
+    for d in range(3, 8):
+        p.text(40, f"01/0{d}/26"); p.text(110, "Room Charge - Hilton Garden Inn"); p.text(560, "215.30", right=True); p.nl()
+    p.text(40, "01/08/26"); p.text(110, "VISA Payment Card ending 1234"); p.text(560, "-1,076.50", right=True); p.nl()
+    p.text(110, "Balance"); p.text(560, "0.00", right=True); p.nl()
+    p.save()
+    expected["not_statements"] = expected.get("not_statements", []) + [os.path.relpath(path, OUT)]
+
+
+def loan_statement():
+    """A student-loan statement listing months of past payments (already in the checking statements)."""
+    path = os.path.join(OUT, "Receipts", "studentaid-statement.pdf")
+    p = Page(path)
+    p.text(40, "U.S. Department of Education - Federal Student Aid", B, 12); p.nl(16)
+    p.text(40, "Borrower: J Smith   Loan servicer: MOHELA"); p.nl()
+    p.text(40, "Outstanding Principal: $18,250.00   Interest Rate: 4.99%   Repayment Plan: Standard"); p.nl(18)
+    p.text(40, "PAYMENT HISTORY", B); p.nl()
+    p.text(40, "Date", B); p.text(110, "Description", B); p.text(560, "Amount", B, right=True); p.nl()
+    for k, (y, m) in enumerate([(2025, 7), (2025, 8), (2025, 9), (2025, 10), (2025, 11), (2025, 12), (2026, 1)]):
+        p.text(40, f"{m:02d}/06/{y}"); p.text(110, "DEPT EDUCATION STUDENT LN Payment"); p.text(560, "150.00", right=True); p.nl()
+    p.save()
+    expected["not_statements"] = expected.get("not_statements", []) + [os.path.relpath(path, OUT)]
+
+
 def main():
     import shutil
     shutil.rmtree(OUT, ignore_errors=True)
@@ -283,6 +315,8 @@ def main():
     debit_credit_columns()
     dmy_statement()
     locked()
+    hotel_folio()
+    loan_statement()
     expected["spending_total"] = round(expected["spending_total"], 2)
     with open(os.path.join(HERE, "expected.json"), "w") as f:
         json.dump(expected, f, indent=2)

@@ -64,6 +64,12 @@ HOW DOUBLE COUNTING IS AVOIDED
   * If two statements of the same account overlap (e.g. a monthly statement plus a custom date-range
     download), transactions that appear in both are counted once.
   * The "Cut back" page warns about any large payments to card companies that are still counted.
+  * PDFs that aren't bank or card statements (hotel bills/folios, receipts, invoices, loan
+    statements with payment history, pay stubs) are skipped: their charges are already on your
+    statements. They're listed on Files & checks as "Not a statement"; select one and click
+    "Include / skip file" if it really is a statement.
+  * A charge only counts as recurring when it appears on separate statements in different months.
+    Double-click a recurring charge to see each transaction and the statement it came from.
   * Money sent to people (Zelle/Venmo/Cash App) counts as spending; money received counts as money in.
     If someone pays you back their share of bills (e.g. a partner's Zelle for rent/utilities),
     double-click one of their payments and set the category to "Shared bills (paid back)". The app

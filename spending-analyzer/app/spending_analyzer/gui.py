@@ -707,7 +707,7 @@ class App:
         outer, self.tx_tree = self._table(page, [
             ("Date", "Date", 92, "w", False), ("Description", "Description", 280, "w", True),
             ("Company", "Company", 150, "w", False), ("Category", "Category", 170, "w", False),
-            ("Amount", "Amount", 90, "e", False), ("Folder", "Folder", 110, "w", False),
+            ("Amount", "Amount", 90, "e", False), ("Folder", "From statement", 170, "w", False),
             ("Note", "Note", 160, "w", True)])
         outer.pack(fill="both", expand=True)
         self.tx_tree.bind("<Double-1>", lambda e: self.set_category_dialog())
@@ -749,7 +749,7 @@ class App:
             self._tx_index[iid] = t
             tv.insert("", "end", iid=iid, tags=tags, values=(
                 t.date.isoformat(), t.description, t.merchant, t.category + src_mark.get(t.category_source, ""),
-                amt, t.group, note))
+                amt, os.path.basename(t.source_file), note))
             if t.is_spending and t.category not in NON_SPENDING:
                 total += t.amount
         self.tx_sum.configure(text=f"{len(rows)} shown · spending in view {money(total)}   ·   "
@@ -776,6 +776,19 @@ class App:
             ("Times", "Times", 60, "center", False), ("Last", "Last charged", 100, "w", False),
             ("Note", "Note", 240, "w", True)])
         outer.pack(fill="both", expand=True)
+        self.rec_tree.bind("<Double-1>", self._rec_drill)
+        tk.Label(page, text="Double-click a row to see its transactions and which statement each came from.",
+                 bg=T.BG, fg=T.MUTED, font=T.FONTS["small"]).pack(anchor="w", pady=(8, 0))
+
+    def _rec_drill(self, e=None):
+        sel = self.rec_tree.selection()
+        if not sel:
+            return
+        self.search_var.set(self.rec_tree.set(sel[0], "Company"))
+        self.cat_filter.set("All categories")
+        self.show_hidden.set(True)
+        self.render_transactions()
+        self.show_page("transactions")
 
     def render_recurring(self):
         sel = self.rec_filter.get()
@@ -852,6 +865,7 @@ class App:
                  font=T.FONTS["small"]).pack(side="left")
         self.pw_btn = T.Button(top, "Enter password…", self.ask_password_selected)
         self.pw_btn.pack(side="right")
+        T.Button(top, "Include / skip file", self.toggle_include_file).pack(side="right", padx=8)
         outer, self.file_tree = self._table(page, [
             ("File", "File", 300, "w", True), ("Account", "Account", 190, "w", False),
             ("Period", "Period", 190, "w", False), ("Check", "Check", 150, "w", False),
@@ -892,6 +906,7 @@ class App:
             check, _ = RECON_LABEL.get(info.recon_status, ("", T.MUTED))
             if r.status != "ok":
                 check = {"password": "Locked", "duplicate": "Duplicate file", "no-text": "No text",
+                         "not-statement": "Not a statement" + (" (included)" if r.transactions else ""),
                          "no-transactions": "Nothing found", "error": "Error"}.get(r.status, r.status)
             acct = info.account_key or " ".join(x for x in [info.bank, {"card": "card", "bank": "account"}.get(
                 info.kind, "")] if x)
@@ -912,7 +927,7 @@ class App:
             iid = str(i)
             self._file_index[iid] = r
             tv.insert("", "end", iid=iid, tags=tags, values=(
-                os.path.relpath(r.path, base), acct, period, check, len(r.transactions), notes))
+                os.path.relpath(r.path, base), acct, period, check, len(r.transactions) or len(r.held) or 0, notes))
         self.render_preview()
 
     def render_preview(self):
@@ -1043,6 +1058,20 @@ class App:
                           "Passwords are only kept in memory while the app is open."):
             self.ask_passwords(locked)
 
+    def toggle_include_file(self):
+        sel = self.file_tree.selection()
+        r = self._file_index.get(sel[0]) if sel and hasattr(self, "_file_index") else None
+        if not r or r.status != "not-statement":
+            messagebox.showinfo(APP_NAME, "Select a file marked 'Not a statement' first.\n\nThose are documents like "
+                                          "hotel bills, receipts or loan statements whose charges are already on "
+                                          "your bank/card statements.")
+            return
+        inc = set(self.settings.get("include_files", []))
+        (inc.discard if r.sha1 in inc else inc.add)(r.sha1)
+        self.settings["include_files"] = sorted(inc)
+        self._save_settings()
+        self.rebuild()
+
     def ask_password_selected(self):
         sel = self.file_tree.selection()
         r = self._file_index.get(sel[0]) if sel and hasattr(self, "_file_index") else None
@@ -1073,7 +1102,10 @@ class App:
 
     def rebuild(self):
         """Categorise, link transfers/duplicates and apply the user's corrections, from scratch."""
+        include = set(self.settings.get("include_files", []))
         for r in self.file_results:
+            if r.status == "not-statement" or r.held:
+                r.transactions = list(r.held) if r.sha1 in include else []
             r.group = self._group_of(r.path)
             r.duplicates_removed = 0
             for t in r.transactions:

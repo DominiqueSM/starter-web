@@ -122,6 +122,16 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(got, EXPECTED["files"][name]["dates"])
         self.assertEqual(self.by_file[name].info.date_order, "DMY")
 
+    def test_receipts_and_loan_statements_are_not_counted(self):
+        for name in EXPECTED["not_statements"]:
+            with self.subTest(file=name):
+                r = self.by_file[name]
+                self.assertEqual(r.status, "not-statement", r.info.doc_reason)
+                self.assertEqual(r.transactions, [])
+                self.assertTrue(r.held)
+        merchants = {r.merchant for r in self.analysis.recurring}
+        self.assertFalse(any("Hilton" in m for m in merchants))
+
     def test_password_protected(self):
         self.assertEqual(self.locked_before.status, "password")
         self.assertEqual(len(self.by_file[EXPECTED["locked"]["file"]].transactions), EXPECTED["locked"]["count"])
@@ -262,6 +272,12 @@ class MoneyInVsOut(unittest.TestCase):
         self.assertAlmostEqual(a.total_spent, 0)
         self.assertAlmostEqual(a.compare["money_in"], 4003.10)
         self.assertAlmostEqual(sum(r["saved"] for r in a.cashflow), 1000)
+
+    def test_one_document_never_makes_a_recurring_charge(self):
+        same_file = [tx(f"2026-01-0{d}", "HILTON GARDEN INN", 215.30, kind="card", account="Folio") for d in range(3, 8)]
+        same_file += [tx(f"2025-{m:02d}-06", "DEPT EDUCATION STUDENT LN", 150) for m in range(6, 13)]
+        a = self.run_analysis(same_file)
+        self.assertEqual(a.recurring, [])
 
     def test_partial_months_are_left_out(self):
         # checking statement ends Jan 15 (one paycheck), card statement covers all of January
