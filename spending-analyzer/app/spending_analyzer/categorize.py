@@ -8,7 +8,7 @@ import re
 from .merchants import canonical
 
 # Categories that are not counted as "spending"
-NON_SPENDING = {"Income", "Transfers & Payments"}
+NON_SPENDING = {"Income", "Transfers & Payments", "Savings & Investments"}
 
 # Categories considered discretionary (candidates for cutting back)
 DISCRETIONARY = {
@@ -27,11 +27,19 @@ DEFAULT_RULES: list[tuple[str, list[str]]] = [
         "TRANSFER TO SAV", "TRANSFER TO CHK", "XFER", "FUNDS TRANSFER", "PAYPAL INST XFER", "TO SAVINGS",
         "FROM SAVINGS", "TO CHECKING", "FROM CHECKING",
     ]),
+    ("Savings & Investments", ["ROBINHOOD", "COINBASE", "ACORNS", "BETTERMENT", "WEALTHFRONT", "VANGUARD",
+                               "FIDELITY", "SCHWAB BROKERAGE", "E*TRADE", "ETRADE", "M1 FINANCE", "STASH",
+                               "PUBLIC.COM", "WEBULL", "AMERITRADE", "CRYPTO.COM", "KRAKEN", "GEMINI",
+                               "BROKERAGE", "INVESTMENT", "TREASURYDIRECT", "SAVINGS DEPOSIT", "TO BROKERAGE",
+                               "MARCUS", "AMEX SAVINGS", "ALLY BANK TRANSFER", "SOFI SAVINGS", "CIT BANK",
+                               "CASH APP INVESTING", "401K", "ROTH IRA", "IRA CONTRIB"]),
     ("Loans & Debt", ["STUDENT LN", "STUDENT LOAN", "LOAN PMT", "LOAN PAYMENT", "AUTO LOAN", "CAR PAYMENT",
                       "AUTO FINANCE", "AUTO FIN", "LOAN SERVIC", "NAVIENT", "NELNET", "MOHELA", "AIDVANTAGE",
                       "DEPT EDUCATION", "DEPT OF ED", "SALLIE MAE", "LENDINGCLUB", "UPSTART", "PERSONAL LOAN"]),
     ("Income", ["PAYROLL", "DIRECT DEP", "DIR DEP", "SALARY", "INTEREST PAID", "INTEREST EARNED",
-                "DIVIDEND", "TAX REFUND", "IRS TREAS", "DEPOSIT"]),
+                "DIVIDEND", "TAX REFUND", "IRS TREAS", "TREAS 310", "SSA TREAS", "PAYCHECK", "WAGES", "ADP",
+                "GUSTO", "PAYCHEX", "INTUIT PAYROLL", "UNEMPLOYMENT", "ACH CREDIT", "ACH CR", "DIRECT CREDIT",
+                "MOBILE DEPOSIT", "REMOTE DEPOSIT", "ATM DEPOSIT", "BRANCH DEPOSIT", "DEPOSIT"]),
     ("Fees & Interest", [
         "FEE", "INTEREST CHARGE", "FINANCE CHARGE", "OVERDRAFT", "NSF", "LATE CHARGE", "ANNUAL MEMBERSHIP",
         "FOREIGN TRANSACTION", "ATM SURCHARGE", "SERVICE CHARGE", "PURCHASE INTEREST", "CASH ADVANCE INTEREST",
@@ -116,7 +124,7 @@ DEFAULT_RULES: list[tuple[str, list[str]]] = [
     ("Cash & ATM", ["ATM", "CASH WITHDRAWAL", "WITHDRAWAL"]),
 ]
 
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 # On a card statement these mean "payment received" (money in). Out of a checking account they are
 # usually bill payments (real spending), so they only count as transfers for money coming in.
@@ -222,16 +230,22 @@ class Categorizer:
         if CARD_PAYMENT_OUT.search(d) or (money_in and GENERIC_PAYMENT.search(d)):
             return "Transfers & Payments", "keyword"
         if re.search(r"\b(ZELLE|VENMO|CASH ?APP|SQUARE CASH|APPLE CASH)\b", d):
-            return ("Transfers & Payments" if money_in else P2P_CATEGORY), "keyword"
+            return P2P_CATEGORY, "keyword"   # money in this way counts as money in, unless matched to own account
         for cat, strong, _ in self._compiled:
-            if cat in ("Transfers & Payments", "Income") and strong.search(d):
+            if cat in ("Transfers & Payments", "Savings & Investments") and strong.search(d):
+                return cat, "keyword"
+            if cat == "Income" and money_in and strong.search(d):
                 return cat, "keyword"
         if brand_cat:
             return brand_cat, "merchant"
         for cat, strong, _ in self._compiled:
+            if cat == "Income" and not money_in:
+                continue
             if strong.search(d):
                 return cat, "keyword"
         for cat, _, weak in self._compiled:
+            if cat == "Income" and not money_in:
+                continue
             if weak.search(d):
                 return cat, "guess"
         return "Other", "none"
@@ -246,8 +260,7 @@ class Categorizer:
         for t in txs:
             t.merchant, brand_cat = canonical(t.description)
             t.category, t.category_source = self.categorize(t.description, t.merchant, brand_cat, t.is_credit)
-            if t.category == "Income":
-                t.is_credit = True
+            # (Income is only ever given to money coming in, so it never flips a withdrawal)
 
 
 def infer_rent(transactions) -> int:

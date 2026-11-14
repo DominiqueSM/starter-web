@@ -62,6 +62,10 @@ class Analysis:
     suggestions: list
     potential_monthly_savings: float
     data_quality: float = 1.0   # share of transactions from statements that passed a self-check
+    money_in: float = 0.0       # all real money in to bank accounts (pay, other deposits, money from people)
+    refunds: float = 0.0        # refunds/returns, subtracted from spending
+    cashflow: list = field(default_factory=list)   # one dict per month
+    compare: dict | None = None                    # spending vs money in over months covered by bank statements
 
 
 def _ym(d: date) -> str:
@@ -179,21 +183,45 @@ def find_recurring(spending) -> list[Recurring]:
 
 # ------------------------------------------------------------------ main
 
-def analyze(transactions, data_quality: float = 1.0) -> Analysis:
-    spending = [t for t in transactions if t.is_spending and t.category not in NON_SPENDING]
-    credits = [t for t in transactions if t.is_credit and not t.excluded and not t.duplicate
-               and t.category != "Transfers & Payments"]
-    total_spent = sum(t.amount for t in spending)
-    total_in = sum(t.amount for t in credits)
-    income = sum(t.amount for t in credits if t.category == "Income")
+REFUND_RE = re.compile(r"\b(REFUND|RETURN|REVERSAL|REVERSED|CREDIT ADJ|ADJUSTMENT|CHARGEBACK|DISPUTE|RETURNED)\b", re.I)
+NOT_MONEY_IN = {"Transfers & Payments", "Savings & Investments"}
 
-    if spending:
-        first = min(t.date for t in spending)
-        last = max(t.date for t in spending)
-        months = _months_span(first, last)
-    else:
-        first = last = None
-        months = 1.0
+
+def _is_refund(t) -> bool:
+    """A credit that gives back money you spent (rather than new money coming in)."""
+    if t.category in NOT_MONEY_IN or t.category == "Income":
+        return False
+    if t.kind == "card":
+        return True                    # on a card, any credit that isn't a payment is a refund/credit
+    return bool(REFUND_RE.search(t.description)) or t.category_source == "merchant"
+
+
+def _month_days(ym: str):
+    import calendar
+    y, m = int(ym[:4]), int(ym[5:])
+    return date(y, m, 1), date(y, m, calendar.monthrange(y, m)[1])
+
+
+def _covered(ym: str, spans) -> bool:
+    """True if the statement periods in spans cover at least 90% of the month's days."""
+    lo, hi = _month_days(ym)
+    days = set()
+    for s, e in spans:
+        a, b = max(s, lo), min(e, hi)
+        if a <= b:
+            days.update(range(a.toordinal(), b.toordinal() + 1))
+    return len(days) >= 0.9 * ((hi - lo).days + 1)
+
+
+def analyze(transactions, data_quality: float = 1.0, coverage=None) -> Analysis:
+    """coverage: optional list of (kind, start_date, end_date), one per statement, used to compare only
+    months that the statements cover completely."""
+    live = [t for t in transactions if not t.excluded and not t.duplicate]
+    spending = [t for t in live if not t.is_credit and t.category not in NON_SPENDING]
+    credits = [t for t in live if t.is_credit and t.category not in NOT_MONEY_IN]
+    refunds = [t for t in credits if _is_refund(t)]
+    money_in_txs = [t for t in credits if not _is_refund(t) and t.kind != "card"]
+    income = sum(t.amount for t in money_in_txs if t.category == "Income")
 
     cat = defaultdict(float)
     mon = defaultdict(float)
@@ -205,14 +233,85 @@ def analyze(transactions, data_quality: float = 1.0) -> Analysis:
         mon_cat[_ym(t.date)][t.category] += t.amount
         merch[t.merchant][0] += t.amount
         merch[t.merchant][1] += 1
+    refund_total = 0.0
+    for t in refunds:   # net refunds against the category they came from (never below zero)
+        c = t.category if cat.get(t.category, 0) > 0 else max(cat, key=cat.get, default=None)
+        if c is None:
+            continue
+        take = min(t.amount, cat[c])
+        cat[c] -= take
+        ym = _ym(t.date)
+        mon[ym] = max(0.0, mon.get(ym, 0.0) - take)
+        mon_cat[ym][c] = max(0.0, mon_cat[ym].get(c, 0.0) - take)
+        refund_total += take
+    cat = {c: v for c, v in cat.items() if v > 0.005}
+    total_spent = sum(cat.values())
+
+    if spending:
+        first = min(t.date for t in spending)
+        last = max(t.date for t in spending)
+        months = _months_span(first, last)
+    else:
+        first = last = None
+        months = 1.0
+
+    # ---- cash flow, month by month
+    rows = defaultdict(lambda: defaultdict(float))
+    bank_months = set()
+    for t in live:
+        ym = _ym(t.date)
+        if t.kind != "card":
+            bank_months.add(ym)
+        if t.is_credit:
+            if t in money_in_txs:
+                rows[ym]["income" if t.category == "Income" else "other_in"] += t.amount
+            elif t in refunds:
+                rows[ym]["refunds"] += t.amount
+        else:
+            if t.category in NON_SPENDING:
+                key = {"Savings & Investments": "saved"}.get(t.category,
+                                                             "card_payments" if t.transfer_match or "CARD" in
+                                                             t.description.upper() or "CRD" in t.description.upper()
+                                                             else "transfers")
+                rows[ym][key] += t.amount
+            else:
+                rows[ym]["spent_card" if t.kind == "card" else "spent_bank"] += t.amount
+    cashflow = []
+    for ym in sorted(set(rows) | set(mon)):
+        r = rows[ym]
+        cashflow.append({"month": ym, "income": r["income"], "other_in": r["other_in"],
+                         "money_in": r["income"] + r["other_in"], "spent": mon.get(ym, 0.0),
+                         "spent_card": r["spent_card"], "spent_bank": r["spent_bank"], "refunds": r["refunds"],
+                         "card_payments": r["card_payments"], "transfers": r["transfers"], "saved": r["saved"],
+                         "has_bank": ym in bank_months, "partial": False})
+    if coverage:
+        bank_spans = [(s_, e_) for k, s_, e_ in coverage if k != "card"]
+        card_spans = [(s_, e_) for k, s_, e_ in coverage if k == "card"]
+        card_lo = min((s_ for s_, _ in card_spans), default=None)
+        card_hi = max((e_ for _, e_ in card_spans), default=None)
+        for c in cashflow:
+            full_bank = _covered(c["month"], bank_spans)
+            lo, hi = _month_days(c["month"])
+            in_card_range = card_lo is not None and hi >= card_lo and lo <= card_hi
+            full_card = not in_card_range or _covered(c["month"], card_spans)
+            c["has_bank"] = c["has_bank"] and full_bank and full_card
+            c["partial"] = not full_bank and c["month"] in bank_months or (full_bank and not full_card)
+    compare = None
+    cmp_rows = [c for c in cashflow if c["has_bank"] and (c["spent"] > 0 or c["money_in"] > 0)]
+    if cmp_rows:
+        compare = {"months": [c["month"] for c in cmp_rows],
+                   "money_in": sum(c["money_in"] for c in cmp_rows),
+                   "spent": sum(c["spent"] for c in cmp_rows),
+                   "left_out": [c["month"] for c in cashflow if not c["has_bank"] and (c["spent"] > 0 or c["money_in"] > 0)]}
 
     a = Analysis(
-        spending=spending, total_spent=total_spent, total_in=total_in, income=income, months=months,
-        first_date=first, last_date=last, by_category=sorted(cat.items(), key=lambda kv: -kv[1]),
+        spending=spending, total_spent=total_spent, total_in=sum(t.amount for t in money_in_txs), income=income,
+        months=months, first_date=first, last_date=last, by_category=sorted(cat.items(), key=lambda kv: -kv[1]),
         by_month=sorted(mon.items()), by_month_category={k: dict(v) for k, v in mon_cat.items()},
         top_merchants=sorted(((m, v[0], v[1]) for m, v in merch.items()), key=lambda x: -x[1])[:25],
         recurring=find_recurring(spending), suggestions=[], potential_monthly_savings=0.0,
-        data_quality=data_quality,
+        data_quality=data_quality, money_in=sum(t.amount for t in money_in_txs), refunds=refund_total,
+        cashflow=cashflow, compare=compare,
     )
     a.suggestions = build_suggestions(a, transactions)
     a.potential_monthly_savings = sum(s.monthly_savings for s in a.suggestions)
@@ -252,22 +351,37 @@ def build_suggestions(a: Analysis, all_txs) -> list[Suggestion]:
             items=[f"{t.date}  {t.description}  {money(t.amount)}" for t in sorted(suspects, key=lambda t: t.date)][:20],
         ))
 
-    # 1. Spending vs income
-    if a.income > 0:
-        inc_pm = a.income / a.months
-        ratio = total_pm / inc_pm
+    # 1. Spending vs money in (only months covered by a bank statement, so card-only months don't skew it)
+    c = a.compare
+    if c is None:
+        S.append(Suggestion(
+            "Add a checking statement to compare with money coming in",
+            "Only card statements were found, so there's nothing to compare spending against.",
+            priority=3, kind="info", confidence="high"))
+    elif c["money_in"] > 0:
+        n = len(c["months"])
+        inn, out = c["money_in"] / n, c["spent"] / n
+        ratio = out / inn
+        left = (f" Months not fully covered by your statements ({', '.join(c['left_out'][:4])}"
+                f"{'...' if len(c['left_out']) > 4 else ''}) are left out of this comparison."
+                if c["left_out"] else "")
+        over = [r for r in a.cashflow if r["month"] in c["months"] and r["spent"] > r["money_in"]]
+        items = [f"{r['month']}: in {money(r['money_in'])}, spent {money(r['spent'])} "
+                 f"(cards {money(r['spent_card'])}, bank {money(r['spent_bank'])})" for r in over]
         if ratio > 1.0:
             S.append(Suggestion(
-                "You're spending more than you earn",
-                f"Spending averages {money(total_pm)}/month against {money(inc_pm)}/month of income "
-                f"({ratio:.0%}). The suggestions below are ranked by how much they could close that gap.",
-                priority=1, kind="warn", confidence=_confidence(a, "medium")))
+                "You spent more than came in",
+                f"Over {n} month(s) with bank statements, spending averaged {money(out)}/month against "
+                f"{money(inn)}/month coming in ({ratio:.0%}).{left} Card payments, transfers between your accounts "
+                "and money moved to savings are not counted as spending. If this looks wrong, open the Cash flow "
+                "page: it shows exactly what was counted each month.",
+                priority=1, kind="warn", confidence=_confidence(a, "medium"), items=items))
         else:
             S.append(Suggestion(
-                "Spending vs. income",
-                f"You spend {ratio:.0%} of your income ({money(total_pm)} of {money(inc_pm)} a month), "
-                f"leaving about {money(inc_pm - total_pm)}/month. A common target is spending under 80%.",
-                priority=3, kind="info", confidence=_confidence(a, "medium")))
+                "Spending vs. money coming in",
+                f"You spend {ratio:.0%} of what comes in ({money(out)} of {money(inn)} a month over {n} month(s)), "
+                f"leaving about {money(inn - out)}/month.{left} A common target is spending under 80%.",
+                priority=3, kind="info", confidence=_confidence(a, "medium"), items=items))
 
     # 2. Fees & interest: fully avoidable
     fees = [t for t in a.spending if t.category == "Fees & Interest"]

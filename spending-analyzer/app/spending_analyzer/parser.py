@@ -19,7 +19,7 @@ from datetime import date, timedelta
 
 from .pdftext import Line
 
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 # ---------------------------------------------------------------- data classes
 
@@ -129,7 +129,8 @@ SECTION_IGNORE = re.compile(r"^(daily (ending )?balances?|daily ledger|balance s
 CREDIT_KEYWORDS = re.compile(
     r"\b(payroll|direct dep|dir dep|deposit|salary|refund|return|reversal|cash ?back|interest paid|interest earned"
     r"|payment[\s,-]*thank|thank you for your payment|payment received|credit adjustment|statement credit"
-    r"|zelle (payment )?from|transfer from|venmo cashout|tax refund|dividend|rebate|reimbursement)\b", re.I)
+    r"|zelle (payment )?from|transfer from|venmo cashout|tax refund|dividend|rebate|reimbursement|ach credit|ach cr"
+    r"|direct credit|mobile deposit|remote deposit|edeposit|paycheck|wages|treas 310|ssa treas)\b", re.I)
 
 CARD_WORDS = ["credit limit", "minimum payment", "payment due date", "new balance", "available credit",
               "cash advance", "annual percentage rate", "credit card", "cardmember", "card member", "purchases",
@@ -669,6 +670,29 @@ def _net(rows, kind):
     return round(s, 2)
 
 
+def _flip_subset(rows, weak, ob, cb, kinds, max_rows=3):
+    """Find up to max_rows weakly-decided rows whose direction, flipped, makes the statement add up."""
+    from itertools import combinations
+    cand = weak[:60]
+    for k in kinds:
+        diff = round(cb - ob - _net(rows, k), 2)
+        for n in range(1, max_rows + 1):
+            if n == 3 and len(cand) > 40:
+                break
+            for combo in combinations(cand, n):
+                # flipping a row changes the net by 2*amount, sign depends on its current direction
+                delta = 0.0
+                for r in combo:
+                    signed = r["amount"] if r["dir"] == "in" else -r["amount"]
+                    delta += -2 * (-signed if k == "card" else signed)
+                if abs(round(delta - diff, 2)) < 0.015:
+                    for r in combo:
+                        r["dir"] = "in" if r["dir"] == "out" else "out"
+                        r["ev"] = "reconciled"
+                    return k, list(combo)
+    return None
+
+
 def _reconcile(rows, info: StatementInfo):
     """Check opening +/- transactions == closing. Try flipping weak (sign-based) evidence if it doesn't match."""
     ob, cb = info.opening_balance, info.closing_balance
@@ -693,6 +717,14 @@ def _reconcile(rows, info: StatementInfo):
                     return
             for r in weak:
                 r["dir"] = "in" if r["dir"] == "out" else "out"
+            # Or just a few rows read backwards: each one is off by twice its amount
+            fixed = _flip_subset(rows, weak, ob, cb, kinds)
+            if fixed:
+                info.kind = fixed[0]
+                info.recon_status = "reconciled"
+                info.recon_detail = (f"Reconciled after correcting money in/out on {len(fixed[1])} row(s): "
+                                     + "; ".join(f"{r['desc'][:30]} {r['amount']:,.2f}" for r in fixed[1]))
+                return
         k = kinds[0]
         diff = round(cb - ob - _net(rows, k), 2)
         info.recon_status = "mismatch"

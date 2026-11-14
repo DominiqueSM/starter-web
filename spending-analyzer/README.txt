@@ -42,6 +42,9 @@ repository > Actions tab > "Spending Analyzer - test and build" > latest run > A
   2. The analysis runs straight away (click Analyze to run it again).
   3. Pages (left side):
        Overview         totals, where the money goes, monthly chart (hover for details)
+       Cash flow        money in vs. spent, month by month, with exactly what was counted
+                        and what wasn't (card payments, transfers, savings). Start here if a
+                        total looks wrong.
        Cut back         ranked suggestions with estimated savings and confidence
        Transactions     everything found; search, filter, fix categories
        Recurring        subscriptions / bills & loans / regular spending, one line per company
@@ -61,8 +64,13 @@ HOW DOUBLE COUNTING IS AVOIDED
   * If two statements of the same account overlap (e.g. a monthly statement plus a custom date-range
     download), transactions that appear in both are counted once.
   * The "Cut back" page warns about any large payments to card companies that are still counted.
-  * Money sent to people (Zelle/Venmo/Cash App) counts as spending; money received doesn't count
-    as income.
+  * Money sent to people (Zelle/Venmo/Cash App) counts as spending; money received counts as money in.
+  * Money moved to savings or investments (Robinhood, Fidelity, Coinbase...) is not spending.
+  * Refunds and returns are subtracted from spending, not counted as money in.
+  * "Money in" is every deposit into your bank accounts except transfers between your own accounts
+    and refunds - not just paychecks the app recognises.
+  * Spending is compared with money in only for whole months covered by your statements, so a
+    month with a full month of card purchases but half a month of checking isn't compared.
 
 
 FIXING THINGS (the app remembers your fixes)

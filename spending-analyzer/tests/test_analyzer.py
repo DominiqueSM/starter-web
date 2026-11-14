@@ -21,7 +21,8 @@ from spending_analyzer.extract import file_hash, parse_file, process_folder  # n
 from spending_analyzer.insights import analyze  # noqa: E402
 from spending_analyzer.linking import link  # noqa: E402
 from spending_analyzer.merchants import canonical  # noqa: E402
-from spending_analyzer.parser import match_date_at, parse_amount  # noqa: E402
+from spending_analyzer.parser import Transaction, match_date_at, parse_amount, parse_statement  # noqa: E402
+from spending_analyzer.pdftext import Line  # noqa: E402
 
 FIX = os.path.join(HERE, "fixtures")
 with open(os.path.join(HERE, "expected.json")) as f:
@@ -161,6 +162,85 @@ class Units(unittest.TestCase):
         self.assertEqual(c.categorize("PAYMENT THANK YOU-MOBILE", "x", None, True)[0], "Transfers & Payments")
         self.assertEqual(c.categorize("Payment To Chase Card Ending IN 1234", "x", None, False)[0],
                          "Transfers & Payments")
+
+
+def tx(d, desc, amt, credit=False, kind="bank", account="Chk"):
+    return Transaction(date=date.fromisoformat(d), description=desc, amount=amt, is_credit=credit,
+                       source_file=account + ".pdf", kind=kind, account=account)
+
+
+class MoneyInVsOut(unittest.TestCase):
+    """Things that made 'you spend more than comes in' wrong."""
+
+    def run_analysis(self, txs):
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        return analyze(txs)
+
+    def test_unrecognised_deposits_still_count_as_money_in(self):
+        a = self.run_analysis([
+            tx("2026-01-02", "ACME CORP ACH CREDIT", 3000, credit=True),
+            tx("2026-01-15", "ZELLE FROM JANE DOE", 500, credit=True),     # side job paid by Zelle
+            tx("2026-01-20", "STRIPE TRANSFER ST-ABC123", 400, credit=True),  # unknown deposit
+            tx("2026-01-05", "KROGER #123", 200)])
+        self.assertAlmostEqual(a.compare["money_in"], 3900)
+        self.assertAlmostEqual(a.income, 3000)
+
+    def test_card_only_months_are_left_out_of_the_comparison(self):
+        txs = [tx("2026-03-01", "ACME PAYROLL", 2000, credit=True), tx("2026-03-03", "KROGER", 500)]
+        for m in ("2025-10", "2025-11", "2025-12", "2026-01", "2026-02"):   # card statements only
+            txs.append(tx(m + "-10", "AMAZON.COM", 900, kind="card", account="Card"))
+        txs.append(tx("2026-03-10", "AMAZON.COM", 900, kind="card", account="Card"))
+        a = self.run_analysis(txs)
+        self.assertEqual(a.compare["months"], ["2026-03"])
+        self.assertAlmostEqual(a.compare["spent"], 1400)
+        self.assertEqual(len(a.compare["left_out"]), 5)
+        self.assertFalse(any(s.title == "You spent more than came in" for s in a.suggestions))
+
+    def test_partial_months_are_left_out(self):
+        # checking statement ends Jan 15 (one paycheck), card statement covers all of January
+        txs = [tx("2026-01-01", "ACME PAYROLL", 2000, credit=True), tx("2026-01-03", "KROGER", 100),
+               tx("2026-01-15", "ACME PAYROLL", 2000, credit=True), tx("2026-01-20", "AMAZON", 300, kind="card"),
+               tx("2026-02-01", "ACME PAYROLL", 2000, credit=True)]
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        cov = [("bank", date(2025, 12, 16), date(2026, 1, 15)), ("bank", date(2026, 1, 16), date(2026, 2, 15)),
+               ("card", date(2026, 1, 1), date(2026, 1, 31))]
+        a = analyze(txs, coverage=cov)
+        self.assertEqual(a.compare["months"], ["2026-01"])
+        cov_short = [("bank", date(2025, 12, 16), date(2026, 1, 15)), ("card", date(2026, 1, 1), date(2026, 1, 31))]
+        a2 = analyze(txs, coverage=cov_short)
+        self.assertNotIn("2026-01", (a2.compare or {}).get("months", []))
+
+    def test_refunds_reduce_spending_instead_of_counting_as_money_in(self):
+        a = self.run_analysis([
+            tx("2026-01-03", "AMAZON.COM", 120, kind="card", account="Card"),
+            tx("2026-01-09", "AMAZON.COM RETURN", 120, credit=True, kind="card", account="Card"),
+            tx("2026-01-10", "TARGET", 50, kind="card", account="Card")])
+        self.assertAlmostEqual(a.total_spent, 50)
+        self.assertAlmostEqual(a.refunds, 120)
+
+    def test_savings_and_investments_are_not_spending(self):
+        a = self.run_analysis([tx("2026-01-02", "ROBINHOOD DES:FUNDS", 500), tx("2026-01-03", "KROGER", 80),
+                               tx("2026-01-01", "PAYROLL", 2000, credit=True)])
+        self.assertAlmostEqual(a.total_spent, 80)
+        self.assertAlmostEqual(a.cashflow[0]["saved"], 500)
+
+    def test_withdrawal_is_never_turned_into_income(self):
+        t = tx("2026-01-02", "SECURITY DEPOSIT TO LANDLORD", 1500)
+        self.run_analysis([t])
+        self.assertFalse(t.is_credit)
+        self.assertNotEqual(t.category, "Income")
+
+    def test_misread_deposit_is_fixed_by_reconciliation(self):
+        # unsigned amounts, no sections, no balance column: the deposit can only be told apart by
+        # the statement's opening/closing balances
+        raw = ["Checking Account Statement", "Beginning Balance $1,000.00",
+               "01/02  ACME CORP 9912        3,000.00", "01/05  KROGER #123          200.00",
+               "01/09  SHELL OIL            40.00", "Ending Balance $3,760.00"]
+        lines = [Line(page=0, y=-i, raw=r) for i, r in enumerate(raw)]
+        txs, info, _ = parse_statement(lines, "x.pdf", 2026)
+        self.assertEqual(info.recon_status, "reconciled", info.recon_detail)
+        acme = next(t for t in txs if "ACME" in t.description)
+        self.assertTrue(acme.is_credit)
 
 
 if __name__ == "__main__":

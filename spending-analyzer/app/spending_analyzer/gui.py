@@ -30,6 +30,7 @@ DATE_CHOICES = {"Dates: auto-detect": "auto", "Dates: MM/DD (US)": "MDY", "Dates
 
 PAGES = [
     ("overview", "Overview", "◉", "Where your money goes"),
+    ("cashflow", "Cash flow", "⇅", "Money in vs. money out, month by month, and exactly what was counted"),
     ("insights", "Cut back", "★", "Ranked ideas with estimated savings"),
     ("transactions", "Transactions", "≡", "Everything found in your statements"),
     ("recurring", "Recurring", "⟳", "Subscriptions, bills and regular payments, one line per company"),
@@ -187,6 +188,7 @@ class App:
             f.grid(row=0, column=0, sticky="nsew")
             self.pages[key] = f
         self._build_overview(self.pages["overview"])
+        self._build_cashflow(self.pages["cashflow"])
         self._build_insights(self.pages["insights"])
         self._build_transactions(self.pages["transactions"])
         self._build_recurring(self.pages["recurring"])
@@ -273,7 +275,7 @@ class App:
         kp = tk.Frame(self.ov_main, bg=T.BG)
         kp.pack(fill="x")
         self.kpis = {}
-        for i, name in enumerate(["Spent", "Average per month", "Income", "Could save", "Statements checked"]):
+        for i, name in enumerate(["Spent", "Average per month", "Money in", "Could save", "Statements checked"]):
             kp.columnconfigure(i, weight=1, uniform="kpi")
             outer, inner = T.card(kp, padding=14)
             outer.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0 if i == 4 else 6))
@@ -327,12 +329,14 @@ class App:
         span = f"{a.first_date:%b %Y} – {a.last_date:%b %Y}" if a.first_date else ""
         self._kpi("Spent", money(a.total_spent), span)
         self._kpi("Average per month", money(a.total_spent / a.months), f"over {a.months:.0f} months")
-        if a.income > 0:
-            share = (a.total_spent / a.months) / (a.income / a.months)
-            self._kpi("Income", money(a.income / a.months), f"a month · you spend {share:.0%}",
-                      T.BAD if share > 1 else None)
+        c = a.compare
+        if c and c["money_in"] > 0:
+            n = len(c["months"])
+            share = c["spent"] / c["money_in"]
+            self._kpi("Money in", money(c["money_in"] / n),
+                      f"a month · you spend {share:.0%} of it", T.BAD if share > 1 else None)
         else:
-            self._kpi("Income", "–", "no paychecks found")
+            self._kpi("Money in", "–", "add a checking statement")
         self._kpi("Could save", money(a.potential_monthly_savings),
                   f"a month · {money(a.potential_monthly_savings * 12)} a year", T.GOOD)
         files = [r for r in self._scoped_files() if r.transactions]
@@ -474,6 +478,113 @@ class App:
         for k, line in enumerate(lines):
             cv.create_text(x + 12, y + 14 + k * 16, text=line, anchor="w", fill="#FFFFFF" if k == 0 else T.SIDEBAR_TEXT,
                            font=T.FONTS["bold"] if k == 0 else T.FONTS["small"], tags="tip")
+
+    # ================================================================ cash flow
+    def _build_cashflow(self, page):
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(2, weight=3)
+        page.rowconfigure(4, weight=2)
+        so, self.cf_summary = T.card(page, padding=16)
+        so.grid(row=0, column=0, sticky="ew")
+        tk.Label(page, text="Only whole months covered by your statements are compared (others are greyed out). "
+                            "Card payments, transfers between your accounts and money moved to savings are shown "
+                            "but not counted as spending. Refunds are subtracted from spending.",
+                 bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], justify="left", anchor="w",
+                 wraplength=1000).grid(row=1, column=0, sticky="ew", pady=(10, 8))
+        outer, self.cf_tree = self._table(page, [
+            ("Month", "Month", 80, "w", False), ("In", "Money in", 90, "e", False),
+            ("Pay", "of which pay", 95, "e", False), ("Spent", "Spent", 90, "e", False),
+            ("Cards", "on cards", 80, "e", False), ("Bank", "from bank", 85, "e", False),
+            ("Net", "Left over", 90, "e", False), ("Refunds", "Refunds", 75, "e", False),
+            ("CardPay", "Card pmts*", 85, "e", False), ("Transfers", "Transfers*", 85, "e", False),
+            ("Saved", "Saved*", 75, "e", False), ("Note", "", 100, "w", True)])
+        outer.grid(row=2, column=0, sticky="nsew")
+        bottom = tk.Frame(page, bg=T.BG)
+        bottom.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        bottom.columnconfigure(0, weight=1, uniform="cf")
+        bottom.columnconfigure(1, weight=1, uniform="cf")
+        bottom.rowconfigure(1, weight=1)
+        tk.Label(bottom, text="Where money in came from", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).grid(
+            row=0, column=0, sticky="w", pady=(0, 6))
+        tk.Label(bottom, text="* Not counted as spending", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).grid(
+            row=0, column=1, sticky="w", pady=(0, 6), padx=(12, 0))
+        o1, self.cf_in = self._table(bottom, [("From", "From", 160, "w", True), ("Type", "Counted as", 120, "w", False),
+                                              ("Times", "Times", 50, "center", False), ("Total", "Total", 95, "e", False)])
+        o1.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
+        o2, self.cf_out = self._table(bottom, [("To", "To", 150, "w", True), ("Why", "Why", 150, "w", False),
+                                               ("Times", "Times", 50, "center", False), ("Total", "Total", 95, "e", False)])
+        o2.grid(row=1, column=1, sticky="nsew", padx=(6, 0))
+        for tv in (self.cf_in, self.cf_out):
+            tv.bind("<Double-1>", lambda e, t=tv: self._cf_drill(t))
+
+    def _cf_drill(self, tv):
+        sel = tv.selection()
+        if sel:
+            self.search_var.set(tv.set(sel[0], "#1"))
+            self.cat_filter.set("All categories")
+            self.show_credits.set(True)
+            self.show_hidden.set(True)
+            self.render_transactions()
+            self.show_page("transactions")
+
+    def render_cashflow(self):
+        for w in self.cf_summary.winfo_children():
+            w.destroy()
+        for tv in (self.cf_tree, self.cf_in, self.cf_out):
+            tv.delete(*tv.get_children())
+        a = self.analysis
+        if not a or not self.transactions:
+            tk.Label(self.cf_summary, text="Run an analysis first.", bg=T.SURFACE, fg=T.MUTED).pack(anchor="w")
+            return
+        c = a.compare
+        row = tk.Frame(self.cf_summary, bg=T.SURFACE)
+        row.pack(fill="x")
+        if c and c["months"]:
+            n = len(c["months"])
+            inn, out = c["money_in"] / n, c["spent"] / n
+            for label, val, col in [("Money in / month", money(inn), T.TEXT), ("Spent / month", money(out), T.TEXT),
+                                    ("Left over / month", money(inn - out), T.GOOD if inn >= out else T.BAD)]:
+                box = tk.Frame(row, bg=T.SURFACE)
+                box.pack(side="left", padx=(0, 48))
+                tk.Label(box, text=label.upper(), bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["tiny"] + ("bold",)).pack(anchor="w")
+                tk.Label(box, text=val, bg=T.SURFACE, fg=col, font=T.FONTS["kpi"]).pack(anchor="w")
+            note = f"Compared over {n} month(s): {c['months'][0]} to {c['months'][-1]}"
+            if c["left_out"]:
+                note += f" · {len(c['left_out'])} partly covered month(s) left out"
+            tk.Label(row, text=note, bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["small"], justify="left",
+                     wraplength=360).pack(side="right")
+        else:
+            tk.Label(row, text="No bank statements found, so there's no money-in to compare with. Add your "
+                               "checking account statements.", bg=T.SURFACE, fg=T.WARN, font=T.FONTS["body"]).pack(anchor="w")
+        f = lambda v: f"{v:,.2f}" if v else ""
+        for i, r in enumerate(a.cashflow):
+            tags = [] if r["has_bank"] else ["muted"]
+            note = "" if r["has_bank"] else ("partial month" if r.get("partial") else "card only")
+            if r["has_bank"] and r["spent"] > r["money_in"]:
+                tags.append("bad")
+            if i % 2:
+                tags.append("odd")
+            net = r["money_in"] - r["spent"]
+            self.cf_tree.insert("", "end", tags=tags, values=(
+                r["month"], f(r["money_in"]), f(r["income"]), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
+                f"{net:,.2f}" if r["has_bank"] else "", f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]),
+                f(r["saved"]), note))
+        from collections import defaultdict as dd
+        from .insights import NOT_MONEY_IN, _is_refund
+        live = [t for t in self._scoped() if not t.excluded and not t.duplicate]
+        ins, outs = dd(lambda: [0, 0.0, ""]), dd(lambda: [0, 0.0, ""])
+        for t in live:
+            if t.is_credit and t.category not in NOT_MONEY_IN and t.kind != "card" and not _is_refund(t):
+                k = ins[t.merchant]
+                k[0] += 1; k[1] += t.amount; k[2] = "Pay / income" if t.category == "Income" else "Other money in"
+            elif not t.is_credit and t.category in NON_SPENDING:
+                k = outs[t.merchant]
+                k[0] += 1; k[1] += t.amount
+                k[2] = ("Saved / invested" if t.category == "Savings & Investments" else
+                        "Card payment (matched)" if t.transfer_match else "Transfer / card payment")
+        for tv, data in ((self.cf_in, ins), (self.cf_out, outs)):
+            for i, (m, (n, tot, why)) in enumerate(sorted(data.items(), key=lambda kv: -kv[1][1])):
+                tv.insert("", "end", tags=["odd"] if i % 2 else [], values=(m, why, n, f"{tot:,.2f}"))
 
     # ================================================================ insights
     def _build_insights(self, page):
@@ -1008,7 +1119,12 @@ class App:
         scoped = self._scoped()
         good = {r.path for r in self.file_results if r.info.recon_status in ("reconciled", "balance-verified")}
         quality = (sum(1 for t in scoped if t.source_file in good) / len(scoped)) if scoped else 1.0
-        self.analysis = analyze(scoped, quality)
+        coverage = []
+        for r in self._scoped_files():
+            if r.transactions:
+                ds = [t.date for t in r.transactions]
+                coverage.append((r.info.kind, r.info.period_start or min(ds), r.info.period_end or max(ds)))
+        self.analysis = analyze(scoped, quality, coverage)
         cats = ["All categories"] + sorted({t.category for t in scoped})
         self.cat_combo["values"] = cats
         if self.cat_filter.get() not in cats:
@@ -1017,6 +1133,7 @@ class App:
 
     def render_all(self):
         self.render_overview()
+        self.render_cashflow()
         self.render_insights()
         self.render_transactions()
         self.render_recurring()

@@ -219,7 +219,7 @@ def debit_credit_columns():
         p.text(560, money(bal), right=True); p.nl()
     p.text(100, "Ending Balance"); p.text(560, money(bal), right=True); p.nl()
     p.save()
-    expected["spending_total"] += 64.10 + 18.40 + 24.99
+    expected["spending_total"] += 64.10 + 18.40 + 24.99 - 25.00   # the Amazon refund is netted off spending
     expected["files"][os.path.relpath(path, OUT)] = {"count": len(rows), "recon": "reconciled", "kind": "bank",
                                                      "last4": "4411"}
 
