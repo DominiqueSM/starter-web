@@ -1,0 +1,2 @@
+pypdf 7.1.0 (BSD-3-Clause) - https://pypi.org/project/pypdf/7.1.0/
+The PDF parser relies on pypdf internals (pypdf._text_extraction._layout_mode); re-run tests before upgrading.

@@ -1,0 +1,70 @@
+name: Spending Analyzer - test and build
+
+# Runs the test suite, then builds a standalone app (no Python needed) for Windows, macOS and Linux.
+# Download the builds from the run's "Artifacts" section on the Actions tab.
+on:
+  push:
+    paths:
+      - "spending-analyzer/**"
+      - ".github/workflows/build-spending-analyzer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        working-directory: spending-analyzer
+        run: python -m unittest discover -s tests -v
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: spending-analyzer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.11.1
+      - name: Build app
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name "Spending Analyzer"
+          --paths app/vendor --paths app --collect-submodules pypdf --collect-submodules spending_analyzer
+          app/main.py
+      - name: Package
+        run: |
+          mkdir -p package
+          if [ "${{ matrix.name }}" = "macos" ]; then
+            cp -R "dist/Spending Analyzer.app" package/
+          else
+            cp -R "dist/Spending Analyzer" package/
+          fi
+          cp README.txt package/
+          cp -R "sample-statements (fake data)" package/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpendingAnalyzer-${{ matrix.name }}
+          path: spending-analyzer/package
+          retention-days: 30

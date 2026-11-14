@@ -1,0 +1,77 @@
+{
+  "spending_total": 11764.83,
+  "card_payments": 2,
+  "files": {
+    "Chase Freedom/20251213-statements-1234.pdf": {
+      "count": 18,
+      "recon": "reconciled",
+      "kind": "card",
+      "last4": "1234"
+    },
+    "Chase Freedom/20260113-statements-1234.pdf": {
+      "count": 18,
+      "recon": "reconciled",
+      "kind": "card",
+      "last4": "1234"
+    },
+    "Chase Freedom/20260213-statements-1234.pdf": {
+      "count": 18,
+      "recon": "reconciled",
+      "kind": "card",
+      "last4": "1234"
+    },
+    "Chase Checking/20251231-statements-9876.pdf": {
+      "count": 9,
+      "recon": "reconciled",
+      "kind": "bank",
+      "last4": "9876"
+    },
+    "Chase Checking/20260131-statements-9876.pdf": {
+      "count": 9,
+      "recon": "reconciled",
+      "kind": "bank",
+      "last4": "9876"
+    },
+    "Chase Checking/20260228-statements-9876.pdf": {
+      "count": 8,
+      "recon": "reconciled",
+      "kind": "bank",
+      "last4": "9876"
+    },
+    "Chase Checking/activity-download-dec15-jan15.pdf": {
+      "count": 10,
+      "recon": "unverified",
+      "kind": "bank",
+      "last4": "9876"
+    },
+    "Credit Union/statement-2026-01.pdf": {
+      "count": 5,
+      "recon": "reconciled",
+      "kind": "bank",
+      "last4": "4411"
+    },
+    "UK Account/estatement-feb-2026.pdf": {
+      "count": 4,
+      "recon": "reconciled",
+      "kind": "bank",
+      "last4": "4321",
+      "dates": [
+        "2026-02-03",
+        "2026-02-13",
+        "2026-02-25",
+        "2026-02-27"
+      ]
+    }
+  },
+  "year_crossing": [
+    "2025-11-14",
+    "2025-11-16",
+    "2025-11-19"
+  ],
+  "overlap_duplicates": 10,
+  "locked": {
+    "file": "locked-statement.pdf",
+    "password": "secret",
+    "count": 1
+  }
+}

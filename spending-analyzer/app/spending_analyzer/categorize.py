@@ -1,9 +1,11 @@
-"""Keyword-based categorisation and merchant-name cleanup."""
+"""Categorisation: learned choices > known merchants > keywords > broad guesses."""
 from __future__ import annotations
 
 import json
 import os
 import re
+
+from .merchants import canonical
 
 # Categories that are not counted as "spending"
 NON_SPENDING = {"Income", "Transfers & Payments"}
@@ -18,11 +20,16 @@ DISCRETIONARY = {
 # Order matters: the first matching category wins.
 DEFAULT_RULES: list[tuple[str, list[str]]] = [
     ("Transfers & Payments", [
-        "PAYMENT THANK", "AUTOPAY", "AUTO PAY", "ONLINE PAYMENT", "TRANSFER TO", "TRANSFER FROM",
-        "ONLINE TRANSFER", "ZELLE", "VENMO", "CASH APP", "CASHAPP", "PAYPAL TRANSFER", "CREDIT CARD PAYMENT",
-        "CARD PAYMENT", "ACH PMT", "EPAY", "BILL PAY", "SAVINGS", "INTERNAL TRANSFER", "WIRE TRANSFER",
-        "MOBILE PAYMENT", "PAYMENT RECEIVED",
+        "TRANSFER TO", "TRANSFER FROM", "ONLINE TRANSFER", "PAYPAL TRANSFER", "CREDIT CARD PAYMENT", "CARD PAYMENT", "INTERNAL TRANSFER", "WIRE TRANSFER",
+        "CARD ENDING", "CRD AUTOPAY", "CREDIT CRD", "CRCARDPMT", "AMEX EPAYMENT", "AMERICAN EXPRESS ACH",
+        "DISCOVER E-PAYMENT", "DISCOVER PAYMENT", "CAPITAL ONE MOBILE", "CAPITAL ONE ONLINE", "CITI AUTOPAY",
+        "CITI CARD ONLINE", "APPLECARD", "GSBANK PAYMENT", "SYNCHRONY", "BARCLAYCARD", "CARDMEMBER SERV",
+        "TRANSFER TO SAV", "TRANSFER TO CHK", "XFER", "FUNDS TRANSFER", "PAYPAL INST XFER", "TO SAVINGS",
+        "FROM SAVINGS", "TO CHECKING", "FROM CHECKING",
     ]),
+    ("Loans & Debt", ["STUDENT LN", "STUDENT LOAN", "LOAN PMT", "LOAN PAYMENT", "AUTO LOAN", "CAR PAYMENT",
+                      "AUTO FINANCE", "AUTO FIN", "LOAN SERVIC", "NAVIENT", "NELNET", "MOHELA", "AIDVANTAGE",
+                      "DEPT EDUCATION", "DEPT OF ED", "SALLIE MAE", "LENDINGCLUB", "UPSTART", "PERSONAL LOAN"]),
     ("Income", ["PAYROLL", "DIRECT DEP", "DIR DEP", "SALARY", "INTEREST PAID", "INTEREST EARNED",
                 "DIVIDEND", "TAX REFUND", "IRS TREAS", "DEPOSIT"]),
     ("Fees & Interest", [
@@ -78,7 +85,7 @@ DEFAULT_RULES: list[tuple[str, list[str]]] = [
     ("Auto & Transport", ["PARKING", "PARK MOBILE", "PARKMOBILE", "TOLL", "E-ZPASS", "EZPASS", "FASTRAK",
                           "SUNPASS", "DMV", "JIFFY LUBE", "AUTOZONE", "O'REILLY", "ADVANCE AUTO", "CAR WASH",
                           "FIRESTONE", "PEP BOYS", "TIRE", "AUTO REPAIR", "MIDAS", "METRO", "TRANSIT",
-                          "MTA", "BART", "CLIPPER", "AMTRAK", "GREYHOUND", "CAR PAYMENT", "AUTO LOAN", "TESLA"]),
+                          "MTA", "BART", "CLIPPER", "AMTRAK", "GREYHOUND", "TESLA", "NTTA", "TXTAG", "TOLLWAY"]),
     ("Travel", ["AIRLINE", "AIRWAYS", "DELTA AIR", "UNITED AIR", "AMERICAN AIR", "SOUTHWEST", "JETBLUE",
                 "ALASKA AIR", "SPIRIT AIR", "FRONTIER", "HOTEL", "MARRIOTT", "HILTON", "HYATT", "AIRBNB",
                 "VRBO", "EXPEDIA", "BOOKING.COM", "PRICELINE", "HOTELS.COM", "HERTZ", "AVIS", "ENTERPRISE RENT",
@@ -95,8 +102,8 @@ DEFAULT_RULES: list[tuple[str, list[str]]] = [
     ("Entertainment", ["CINEMA", "THEATER", "THEATRE", "AMC ", "REGAL", "FANDANGO", "TICKETMASTER",
                        "STUBHUB", "EVENTBRITE", "CONCERT", "MUSEUM", "BOWLING", "GOLF", "ZOO", "PARK TICKET",
                        "LIVE NATION", "SEATGEEK", "ARCADE", "DAVE & BUSTER"]),
-    ("Education", ["TUITION", "UNIVERSITY", "COLLEGE", "SCHOOL", "COURSERA", "UDEMY", "STUDENT LOAN",
-                   "NAVIENT", "NELNET", "BOOKSTORE", "CHEGG"]),
+    ("Education", ["TUITION", "UNIVERSITY", "COLLEGE", "SCHOOL", "COURSERA", "UDEMY", "BOOKSTORE",
+                   "CHEGG"]),
     ("Kids & Pets", ["PETSMART", "PETCO", "CHEWY", "VET", "DAYCARE", "CHILDCARE", "TOYS", "BABY"]),
     ("Gifts & Donations", ["DONATION", "CHARITY", "GOFUNDME", "RED CROSS", "UNICEF", "CHURCH", "FOUNDATION",
                            "1-800-FLOWERS", "FLORIST", "HALLMARK"]),
@@ -109,37 +116,22 @@ DEFAULT_RULES: list[tuple[str, list[str]]] = [
     ("Cash & ATM", ["ATM", "CASH WITHDRAWAL", "WITHDRAWAL"]),
 ]
 
-# Prefixes/noise removed before computing a merchant key
-NOISE_RE = re.compile(
-    r"^(POS|DEBIT|CHECKCARD|CHECK CARD|PURCHASE|DEBIT CARD PURCHASE|CARD PURCHASE|VISA|RECURRING|ACH|"
-    r"PREAUTHORIZED|PRE-AUTH|ELECTRONIC|ONLINE|DBT|POS PURCHASE|PURCHASE AUTHORIZED ON \d\d/\d\d|"
-    r"WITHDRAWAL|SQ ?\*|TST ?\*|SP ?\*|PAYPAL ?\*|PP ?\*|GOOGLE ?\*|APL ?\*|IN ?\*|PY ?\*)\s*",
-    re.I,
-)
-STATE_RE = re.compile(
-    r"\s+(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|"
-    r"NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)$"
-)
+RULES_VERSION = 2
 
+# On a card statement these mean "payment received" (money in). Out of a checking account they are
+# usually bill payments (real spending), so they only count as transfers for money coming in.
+GENERIC_PAYMENT = re.compile(
+    r"\b(PAYMENT\s*-?\s*THANK|THANK YOU|AUTO\s?PAY|ONLINE PAYMENT|MOBILE PAYMENT|ONLINE PMT|MOBILE PMT|EPAY"
+    r"|E-PAYMENT|PAYMENT RECEIVED|BILL PAY|ACH PMT|INTERNET PAYMENT|PAYMENT - WEB|PAYMENT)\b")
+# Money sent to people is real spending (rent to a landlord, splitting a bill); money received isn't income.
+P2P_CATEGORY = "Zelle / Venmo / Cash App"
+CARD_PAYMENT_OUT = re.compile(r"PAYMENT TO .{0,20}(CARD|CRD|VISA|MASTERCARD|AMEX)|(CARD|CRD) (ENDING|PMT|PAYMENT)")
 
-def merchant_key(desc: str) -> str:
-    s = desc.upper()
-    for _ in range(3):
-        s = NOISE_RE.sub("", s).strip()
-    s = re.sub(r"(X{2,}|\*{2,})\d+", " ", s)       # masked card numbers
-    s = re.sub(r"\b\d{2}/\d{2}(/\d{2,4})?\b", " ", s)  # dates
-    s = re.sub(r"[#*]\s*\d+", " ", s)                  # store numbers
-    s = re.sub(r"\b\d{3,}\b", " ", s)                  # long numbers / phone numbers
-    s = re.sub(r"https?://\S+|WWW\.\S+", " ", s)
-    s = re.sub(r"[^A-Z0-9&'.+ ]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    s = STATE_RE.sub("", s)
-    words = [w for w in s.split()
-             if not (len(w) >= 4 and re.search(r"\d", w) and re.search(r"[A-Z]", w))]  # reference codes
-    # Keep the first two words: enough to identify the merchant, drops city names
-    words = words[:2]
-    key = " ".join(words).strip(" .")
-    return key or desc.upper()[:30]
+# Broad words that often mislead: matches on these are marked as a guess.
+WEAK_KEYWORDS = {"SHOP", "STORE", "MARKET", "GAS", "WATER", "POWER", "BAR", "CAFE", "OUTLET", "MALL", "BOUTIQUE",
+                 "DEPOSIT", "WITHDRAWAL", "INN", "KITCHEN", "GRILL", "SPA", "HEALTH", "VISION", "TIRE", "ENERGY",
+                 "INTERNET", "WIRELESS", "SAVINGS", "LOUNGE", "WINE", "BEER", "TOYS", "BABY", "VET", "METRO",
+                 "TRANSIT", "SCHOOL", "RENT", "TOAST", "DELI", "BAKERY", "BURGER", "TACO", "WINGS", "PIZZA", "MARKET"}
 
 
 def _keywords_regex(keywords):
@@ -165,7 +157,11 @@ class Categorizer:
         self.rules_path = os.path.join(data_dir, "category_rules.json")
         self.overrides_path = os.path.join(data_dir, "merchant_overrides.json")
         self.rules = self._load_rules()
-        self._compiled = [(c, _keywords_regex(ks)) for c, ks in self.rules]
+        self._compiled = []
+        for c, ks in self.rules:
+            strong = [k for k in ks if k.strip().upper() not in WEAK_KEYWORDS]
+            weak = [k for k in ks if k.strip().upper() in WEAK_KEYWORDS]
+            self._compiled.append((c, _keywords_regex(strong), _keywords_regex(weak)))
         self.overrides: dict[str, str] = self._load_json(self.overrides_path, {})
 
     @staticmethod
@@ -176,15 +172,28 @@ class Categorizer:
         except Exception:
             return default
 
+    def _write_default_rules(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        with open(self.rules_path, "w", encoding="utf-8") as f:
+            json.dump({"_help": "Edit keywords freely. First matching category wins. Keywords are matched "
+                                "case-insensitively against the transaction description. Known merchants "
+                                "(Netflix, Costco, ...) are recognised before these rules.",
+                       "version": RULES_VERSION,
+                       "rules": [{"category": c, "keywords": k} for c, k in DEFAULT_RULES]}, f, indent=2)
+
     def _load_rules(self):
-        if not os.path.exists(self.rules_path):
-            os.makedirs(self.data_dir, exist_ok=True)
-            with open(self.rules_path, "w", encoding="utf-8") as f:
-                json.dump({"_help": "Edit keywords freely. First matching category wins. "
-                                    "Keywords are matched case-insensitively against the transaction description.",
-                           "rules": [{"category": c, "keywords": k} for c, k in DEFAULT_RULES]},
-                          f, indent=2)
         data = self._load_json(self.rules_path, None)
+        if data is None or data.get("version") != RULES_VERSION:
+            if data is not None:   # keep the old file in case it was edited by hand
+                try:
+                    os.replace(self.rules_path, self.rules_path.replace(".json", f".v{data.get('version', 1)}.bak.json"))
+                except OSError:
+                    pass
+            try:
+                self._write_default_rules()
+            except OSError:
+                pass
+            data = self._load_json(self.rules_path, None)
         try:
             rules = [(r["category"], [k.upper() for k in r["keywords"]]) for r in data["rules"]]
             if rules:
@@ -198,18 +207,34 @@ class Categorizer:
         for c in self.overrides.values():
             if c not in cats:
                 cats.append(c)
-        if "Other" not in cats:
-            cats.append("Other")
+        for extra in (P2P_CATEGORY, "Other"):
+            if extra not in cats:
+                cats.append(extra)
         return cats
 
-    def categorize(self, desc: str, merchant: str) -> str:
+    def categorize(self, desc: str, merchant: str, brand_cat: str | None = None,
+                   money_in: bool = False) -> tuple[str, str]:
+        """Return (category, source). Source: learned | merchant | keyword | guess | none."""
         if merchant in self.overrides:
-            return self.overrides[merchant]
+            return self.overrides[merchant], "learned"
         d = desc.upper()
-        for cat, rx in self._compiled:
-            if rx.search(d):
-                return cat
-        return "Other"
+        # Transfers/income keywords beat merchant names ("Payment to Chase card" stays a transfer)
+        if CARD_PAYMENT_OUT.search(d) or (money_in and GENERIC_PAYMENT.search(d)):
+            return "Transfers & Payments", "keyword"
+        if re.search(r"\b(ZELLE|VENMO|CASH ?APP|SQUARE CASH|APPLE CASH)\b", d):
+            return ("Transfers & Payments" if money_in else P2P_CATEGORY), "keyword"
+        for cat, strong, _ in self._compiled:
+            if cat in ("Transfers & Payments", "Income") and strong.search(d):
+                return cat, "keyword"
+        if brand_cat:
+            return brand_cat, "merchant"
+        for cat, strong, _ in self._compiled:
+            if strong.search(d):
+                return cat, "keyword"
+        for cat, _, weak in self._compiled:
+            if weak.search(d):
+                return cat, "guess"
+        return "Other", "none"
 
     def set_override(self, merchant: str, category: str):
         self.overrides[merchant] = category
@@ -219,7 +244,33 @@ class Categorizer:
 
     def apply(self, txs):
         for t in txs:
-            t.merchant = merchant_key(t.description)
-            t.category = self.categorize(t.description, t.merchant)
+            t.merchant, brand_cat = canonical(t.description)
+            t.category, t.category_source = self.categorize(t.description, t.merchant, brand_cat, t.is_credit)
             if t.category == "Income":
                 t.is_credit = True
+
+
+def infer_rent(transactions) -> int:
+    """Same large amount to the same unrecognised payee every month is almost always rent or a mortgage.
+    Marked as a guess so it's easy to spot and correct."""
+    import statistics
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for t in transactions:
+        if (t.category == "Other" and t.category_source in ("none", "guess") and not t.is_credit
+                and not t.excluded and not t.duplicate):
+            groups[t.merchant].append(t)
+    changed = 0
+    for txs in groups.values():
+        txs.sort(key=lambda t: t.date)
+        months = {(t.date.year, t.date.month) for t in txs}
+        if len(months) < 2:
+            continue
+        med = statistics.median(t.amount for t in txs)
+        gaps = [(b.date - a.date).days for a, b in zip(txs, txs[1:])]
+        if med >= 700 and all(abs(t.amount - med) <= med * 0.01 for t in txs) and all(24 <= g <= 37 for g in gaps):
+            for t in txs:
+                t.category, t.category_source = "Housing", "guess"
+                t.note = "Same large amount every month: probably rent or mortgage"
+                changed += 1
+    return changed

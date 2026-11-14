@@ -1,99 +1,34 @@
-"""PDF text extraction and transaction parsing.
-
-Everything here runs locally. No network access is used anywhere in this app.
-"""
+"""Find statement PDFs in a folder and parse them (with a cache keyed by file content)."""
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
-import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 
-from pypdf import PdfReader
+from .parser import PARSER_VERSION, LineDiag, StatementInfo, Transaction, parse_statement
+from .pdftext import PasswordRequired, UnsupportedEncryption, extract_lines
 
+log = logging.getLogger(__name__)
 
-@dataclass
-class Transaction:
-    date: date
-    description: str
-    amount: float          # always positive
-    is_credit: bool        # True = money in (refund, payment, deposit)
-    source_file: str
-    category: str = "Other"
-    merchant: str = ""
-    excluded: bool = False
-    year_guessed: bool = False
-    uid: str = ""
-    group: str = ""          # top-level subfolder the PDF came from
-
-    @property
-    def is_spending(self) -> bool:
-        return not self.is_credit and not self.excluded
+__all__ = ["Transaction", "FileResult", "process_folder", "find_pdfs"]
 
 
 @dataclass
 class FileResult:
     path: str
-    status: str = "ok"     # ok | no-text | no-transactions | error | duplicate
+    status: str = "ok"     # ok | no-text | no-transactions | error | duplicate | password
     pages: int = 0
     transactions: list = field(default_factory=list)
     note: str = ""
     group: str = ""
-
-
-MONTHS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
-    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
-}
-MON_RE = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?"
-
-# Dates that may begin a transaction line
-DATE_PATTERNS = [
-    # 2024-01-31
-    (re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})\b"), "ymd"),
-    # 01/31/2024, 1-31-24, 01/31
-    (re.compile(r"(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?\b"), "mdy"),
-    # Jan 31, 2024 / Jan 31
-    (re.compile(r"(" + MON_RE + r")\s+(\d{1,2})(?:,?\s+(\d{4}))?\b", re.I), "mon_d_y"),
-    # 31 Jan 2024 / 31 Jan
-    (re.compile(r"(\d{1,2})\s+(" + MON_RE + r")(?:,?\s+(\d{4}))?\b", re.I), "d_mon_y"),
-]
-
-AMOUNT_RE = re.compile(
-    r"(?<![\w.,/])"
-    r"(\(?-?\s?\$?\s?-?\(?\d{1,3}(?:,\d{3})*\.\d{2}\)?|\(?-?\$?-?\d+\.\d{2}\)?)"
-    r"(\s?(?:CR|DR|-))?"
-    r"(?![\w.,/%])",
-    re.I,
-)
-
-SKIP_DESC_RE = re.compile(
-    r"\b(beginning|ending|opening|closing|previous|new|daily|average|available)\s+balance\b"
-    r"|balance\s+(forward|brought|carried)|^total\b|\bsubtotal\b|minimum payment|payment due"
-    r"|credit limit|statement (period|date|closing)|^page \d",
-    re.I,
-)
-
-CREDIT_SECTION_RE = re.compile(
-    r"^\s*(deposits?( and (other )?(additions|credits))?|credits?|payments?(,| and)? (other )?credits?"
-    r"|payments and credits|other credits|electronic deposits|additions)\s*:?\s*$",
-    re.I,
-)
-DEBIT_SECTION_RE = re.compile(
-    r"^\s*(withdrawals?( and (other )?(subtractions|debits))?|debits?|purchases?( and (other )?(charges|debits|adjustments))?"
-    r"|checks?( paid)?|electronic withdrawals|atm (&|and) debit card withdrawals|fees( charged)?|interest charged"
-    r"|purchases and adjustments|other (debits|withdrawals|subtractions)|card purchases|transactions)\s*:?\s*$",
-    re.I,
-)
-
-CREDIT_KEYWORDS = re.compile(
-    r"\b(payroll|direct dep|dir dep|deposit|salary|refund|return|reversal|cashback|cash back reward"
-    r"|interest paid|interest earned|payment[\s,-]*thank|thank you for your payment|autopay payment"
-    r"|online payment|payment received|mobile payment|credit adjustment|statement credit|zelle from|transfer from"
-    r"|venmo cashout|tax refund|dividend)\b",
-    re.I,
-)
+    info: StatementInfo = field(default_factory=StatementInfo)
+    diags: list = field(default_factory=list)
+    method: str = ""
+    sha1: str = ""
+    duplicates_removed: int = 0
 
 
 def file_hash(path: str) -> str:
@@ -104,234 +39,126 @@ def file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def extract_text(path: str) -> tuple[str, int]:
-    reader = PdfReader(path)
-    if reader.is_encrypted:
-        try:
-            reader.decrypt("")
-        except Exception:
-            raise ValueError("PDF is password-protected")
-    pages = []
-    for page in reader.pages:
-        txt = ""
-        try:
-            txt = page.extract_text(extraction_mode="layout") or ""
-        except Exception:
-            pass
-        if not txt.strip():
-            try:
-                txt = page.extract_text() or ""
-            except Exception:
-                txt = ""
-        pages.append(txt)
-    return "\n".join(pages), len(reader.pages)
-
-
-def _to_year(y: str | None) -> int | None:
-    if not y:
-        return None
-    yi = int(y)
-    if yi < 100:
-        yi += 2000
-    return yi if 1990 <= yi <= 2100 else None
-
-
-def _match_date_at(text: str, pos: int):
-    """Try to match a date at exactly `pos`. Returns (month, day, year|None, end) or None."""
-    for rx, kind in DATE_PATTERNS:
-        m = rx.match(text, pos)
-        if not m:
-            continue
-        try:
-            if kind == "ymd":
-                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            elif kind == "mdy":
-                mo, d, y = int(m.group(1)), int(m.group(2)), _to_year(m.group(3))
-                if m.group(3) and y is None:
-                    continue
-                # Disambiguate DD/MM when first part > 12
-                if mo > 12 and d <= 12:
-                    mo, d = d, mo
-            elif kind == "mon_d_y":
-                mo = MONTHS[m.group(1).lower()[:3]]
-                d, y = int(m.group(2)), _to_year(m.group(3))
-            else:
-                mo = MONTHS[m.group(2).lower()[:3]]
-                d, y = int(m.group(1)), _to_year(m.group(3))
-            if not (1 <= mo <= 12 and 1 <= d <= 31):
-                continue
-            return mo, d, y, m.end()
-        except (KeyError, ValueError):
-            continue
-    return None
-
-
-def find_statement_end_date(text: str) -> date | None:
-    """Guess the statement closing date: the latest full date mentioned in the document."""
-    found = []
-    for rx, kind in DATE_PATTERNS:
-        for m in rx.finditer(text):
-            r = _match_date_at(text, m.start())
-            if r and r[2]:
-                mo, d, y, _ = r
-                try:
-                    dt = date(y, mo, d)
-                except ValueError:
-                    continue
-                if date(1995, 1, 1) <= dt <= date.today().replace(year=date.today().year + 1):
-                    found.append(dt)
-    if not found:
-        return None
-    found.sort()
-    # Use a high percentile instead of the max so a stray future date (e.g. "valid through 2030") doesn't win
-    return found[min(len(found) - 1, int(len(found) * 0.95))]
-
-
-def parse_amount(raw: str, suffix: str | None) -> tuple[float, bool]:
-    """Return (absolute amount, negative_flag)."""
-    s = raw.replace("$", "").replace(",", "").replace(" ", "")
-    neg = False
-    if "(" in s or ")" in s:
-        neg = True
-    s = s.strip("()")
-    if s.startswith("-"):
-        neg = True
-        s = s.lstrip("-")
-    if suffix:
-        sfx = suffix.strip().upper()
-        if sfx in ("CR", "-"):
-            neg = True
-    return float(s), neg
-
-
-def parse_transactions(text: str, source_file: str, fallback_year: int) -> list[Transaction]:
-    end_date = find_statement_end_date(text)
-    raw_rows = []   # (month, day, year, desc, amount, negflag, section)
-    section = None  # 'credit' | 'debit' | None
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Section headers (no amounts on the line)
-        if not AMOUNT_RE.search(stripped) and len(stripped) < 60:
-            if CREDIT_SECTION_RE.match(stripped):
-                section = "credit"
-                continue
-            if DEBIT_SECTION_RE.match(stripped):
-                section = "debit"
-                continue
-
-        d1 = _match_date_at(stripped, 0)
-        if not d1:
-            continue
-        mo, d, y, pos = d1
-        rest = stripped[pos:].lstrip()
-        # Optional second date (posting date)
-        d2 = _match_date_at(rest, 0)
-        if d2:
-            rest = rest[d2[3]:].lstrip()
-
-        amounts = list(AMOUNT_RE.finditer(rest))
-        if not amounts:
-            continue
-        first = amounts[0]
-        desc = rest[:first.start()].strip(" -*\t")
-        desc = re.sub(r"\s{2,}", "  ", desc)
-        if not re.search(r"[A-Za-z]{2,}", desc):
-            continue
-        if SKIP_DESC_RE.search(desc):
-            continue
-        try:
-            amt, neg = parse_amount(first.group(1), first.group(2))
-        except ValueError:
-            continue
-        if amt == 0 or amt > 1_000_000:
-            continue
-        raw_rows.append((mo, d, y, desc, amt, neg, section))
-
-    if not raw_rows:
-        return []
-
-    # Decide what "negative" means in this document. Bank statements often show
-    # withdrawals as negative; credit-card statements show purchases as positive.
-    non_section = [r for r in raw_rows if r[6] is None]
-    neg_count = sum(1 for r in non_section if r[5])
-    negatives_are_spending = len(non_section) > 0 and neg_count > len(non_section) / 2
-
-    txs = []
-    for mo, d, y, desc, amt, neg, section in raw_rows:
-        guessed = False
-        if y is None:
-            if end_date:
-                y = end_date.year
-                if mo > end_date.month + 1:  # e.g. December charges on a January statement
-                    y -= 1
-            else:
-                y = fallback_year
-                guessed = True
-        try:
-            dt = date(y, mo, d)
-        except ValueError:
-            continue
-
-        if section == "credit":
-            is_credit = True
-        elif section == "debit":
-            is_credit = False
-        else:
-            is_credit = (not neg) if negatives_are_spending else neg
-        if CREDIT_KEYWORDS.search(desc):
-            is_credit = True
-
-        txs.append(Transaction(
-            date=dt, description=desc, amount=round(amt, 2), is_credit=is_credit,
-            source_file=source_file, year_guessed=guessed,
-        ))
-    return txs
-
-
 def find_pdfs(folder: str) -> list[str]:
     out = []
     for root, dirs, files in os.walk(folder):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         for fn in files:
             if fn.lower().endswith(".pdf") and not fn.startswith("."):
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
 
-def process_folder(folder: str, progress=None) -> list[FileResult]:
+# ------------------------------------------------------------------ cache
+
+def _ser_info(i: StatementInfo) -> dict:
+    d = asdict(i)
+    for k in ("period_start", "period_end"):
+        d[k] = d[k].isoformat() if d[k] else None
+    return d
+
+
+def _de_info(d: dict) -> StatementInfo:
+    for k in ("period_start", "period_end"):
+        d[k] = date.fromisoformat(d[k]) if d.get(k) else None
+    return StatementInfo(**d)
+
+
+def _cache_load(cache_dir, sha, order_pref):
+    if not cache_dir:
+        return None
+    p = os.path.join(cache_dir, sha + ".json")
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if d.get("v") != PARSER_VERSION or d.get("order") != order_pref:
+            return None
+        txs = []
+        for t in d["txs"]:
+            t["date"] = date.fromisoformat(t["date"])
+            txs.append(Transaction(**t))
+        return dict(txs=txs, info=_de_info(d["info"]), diags=[LineDiag(**x) for x in d["diags"]],
+                    pages=d["pages"], method=d["method"], status=d["status"], note=d["note"])
+    except Exception:
+        return None
+
+
+def _cache_save(cache_dir, sha, order_pref, fr: FileResult):
+    if not cache_dir:
+        return
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        txs = []
+        for t in fr.transactions:
+            d = asdict(t)
+            d["date"] = t.date.isoformat()
+            txs.append(d)
+        data = dict(v=PARSER_VERSION, order=order_pref, txs=txs, info=_ser_info(fr.info),
+                    diags=[asdict(x) for x in fr.diags], pages=fr.pages, method=fr.method, status=fr.status,
+                    note=fr.note)
+        tmp = os.path.join(cache_dir, sha + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, os.path.join(cache_dir, sha + ".json"))
+    except Exception as e:
+        log.warning("cache write failed: %s", e)
+
+
+# ------------------------------------------------------------------ main
+
+def parse_file(path: str, sha: str, order_pref="auto", password=None, cache_dir=None) -> FileResult:
+    fr = FileResult(path=path, sha1=sha)
+    cached = _cache_load(cache_dir, sha, order_pref) if not password else None
+    if cached:
+        fr.transactions, fr.info, fr.diags = cached["txs"], cached["info"], cached["diags"]
+        fr.pages, fr.method, fr.status, fr.note = cached["pages"], cached["method"], cached["status"], cached["note"]
+        for t in fr.transactions:
+            t.source_file = path
+        return fr
+    try:
+        lines, fr.pages, fr.method = extract_lines(path, password)
+    except PasswordRequired as e:
+        fr.status, fr.note = "password", str(e)
+        return fr
+    except UnsupportedEncryption as e:
+        fr.status, fr.note = "error", str(e)
+        return fr
+    if sum(len(l.text) for l in lines) < 20:
+        fr.status = "no-text"
+        fr.note = "No selectable text (probably a scanned image). Download a text-based PDF from your bank instead."
+        _cache_save(cache_dir, sha, order_pref, fr)
+        return fr
+    fallback_year = datetime.fromtimestamp(os.path.getmtime(path)).year
+    fr.transactions, fr.info, fr.diags = parse_statement(lines, path, fallback_year, order_pref)
+    if not fr.transactions:
+        fr.status = "no-transactions"
+        fr.note = "Text found, but no rows that look like 'date  description  amount'. See the line preview."
+    elif any(t.year_guessed for t in fr.transactions):
+        fr.note = "Statement period not found; year taken from the file's date."
+    if not password:   # don't cache contents of password-protected files
+        _cache_save(cache_dir, sha, order_pref, fr)
+    return fr
+
+
+def process_folder(folder: str, progress=None, passwords=None, cache_dir=None, order_pref="auto") -> list[FileResult]:
+    passwords = passwords or {}
     results = []
-    seen_hashes = {}
+    seen = {}
     pdfs = find_pdfs(folder)
     for i, path in enumerate(pdfs):
         if progress:
             progress(i, len(pdfs), os.path.basename(path))
-        fr = FileResult(path=path)
         try:
-            h = file_hash(path)
-            if h in seen_hashes:
-                fr.status = "duplicate"
-                fr.note = "Identical to " + os.path.basename(seen_hashes[h]) + " (skipped)"
-                results.append(fr)
-                continue
-            seen_hashes[h] = path
-            text, fr.pages = extract_text(path)
-            if len(text.strip()) < 20:
-                fr.status = "no-text"
-                fr.note = "No selectable text (probably a scanned image). Download a text-based PDF from your bank instead."
+            sha = file_hash(path)
+            if sha in seen:
+                fr = FileResult(path=path, status="duplicate", sha1=sha,
+                                note="Identical to " + os.path.relpath(seen[sha], folder) + " (skipped)")
             else:
-                fallback_year = datetime.fromtimestamp(os.path.getmtime(path)).year
-                fr.transactions = parse_transactions(text, path, fallback_year)
-                if not fr.transactions:
-                    fr.status = "no-transactions"
-                    fr.note = "Text found, but no lines that look like 'date  description  amount'."
-                elif any(t.year_guessed for t in fr.transactions):
-                    fr.note = "Year not found in document; used file date year."
-        except Exception as e:  # keep going on bad files
-            fr.status = "error"
-            fr.note = str(e)[:200]
+                seen[sha] = path
+                fr = parse_file(path, sha, order_pref, passwords.get(path), cache_dir)
+        except Exception as e:
+            log.exception("failed on %s", path)
+            fr = FileResult(path=path, status="error", note=f"{type(e).__name__}: {str(e)[:200]}")
         results.append(fr)
     if progress:
         progress(len(pdfs), len(pdfs), "")
