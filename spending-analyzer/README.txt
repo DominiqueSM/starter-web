@@ -65,6 +65,10 @@ HOW DOUBLE COUNTING IS AVOIDED
     download), transactions that appear in both are counted once.
   * The "Cut back" page warns about any large payments to card companies that are still counted.
   * Money sent to people (Zelle/Venmo/Cash App) counts as spending; money received counts as money in.
+    If someone pays you back their share of bills (e.g. a partner's Zelle for rent/utilities),
+    double-click one of their payments and set the category to "Shared bills (paid back)". The app
+    remembers that person, and from then on their payments lower your spending on bills instead.
+    Money you send them is still counted normally.
   * Money moved to savings or investments (Robinhood, Fidelity, Coinbase...) is not spending.
   * Refunds and returns are subtracted from spending, not counted as money in.
   * "Money in" is every deposit into your bank accounts except transfers between your own accounts

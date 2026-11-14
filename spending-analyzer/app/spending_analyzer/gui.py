@@ -488,14 +488,16 @@ class App:
         so.grid(row=0, column=0, sticky="ew")
         tk.Label(page, text="Only whole months covered by your statements are compared (others are greyed out). "
                             "Card payments, transfers between your accounts and money moved to savings are shown "
-                            "but not counted as spending. Refunds are subtracted from spending.",
+                            "but not counted as spending. Refunds are subtracted from spending. Money from a person (e.g. "
+                            "Zelle) counts as money in; if it's their share of bills, set its category to "
+                            "'Shared bills (paid back)' and it lowers your spending instead.",
                  bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], justify="left", anchor="w",
                  wraplength=1000).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         outer, self.cf_tree = self._table(page, [
             ("Month", "Month", 80, "w", False), ("In", "Money in", 90, "e", False),
             ("Pay", "of which pay", 95, "e", False), ("Spent", "Spent", 90, "e", False),
             ("Cards", "on cards", 80, "e", False), ("Bank", "from bank", 85, "e", False),
-            ("Net", "Left over", 90, "e", False), ("Refunds", "Refunds", 75, "e", False),
+            ("Net", "Left over", 90, "e", False), ("Refunds", "Refunds/paid back", 120, "e", False),
             ("CardPay", "Card pmts*", 85, "e", False), ("Transfers", "Transfers*", 85, "e", False),
             ("Saved", "Saved*", 75, "e", False), ("Note", "", 100, "w", True)])
         outer.grid(row=2, column=0, sticky="nsew")
@@ -508,7 +510,7 @@ class App:
             row=0, column=0, sticky="w", pady=(0, 6))
         tk.Label(bottom, text="* Not counted as spending", bg=T.BG, fg=T.TEXT, font=T.FONTS["h3"]).grid(
             row=0, column=1, sticky="w", pady=(0, 6), padx=(12, 0))
-        o1, self.cf_in = self._table(bottom, [("From", "From", 160, "w", True), ("Type", "Counted as", 120, "w", False),
+        o1, self.cf_in = self._table(bottom, [("From", "From", 140, "w", True), ("Type", "Counted as", 170, "w", False),
                                               ("Times", "Times", 50, "center", False), ("Total", "Total", 95, "e", False)])
         o1.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
         o2, self.cf_out = self._table(bottom, [("To", "To", 150, "w", True), ("Why", "Why", 150, "w", False),
@@ -574,9 +576,14 @@ class App:
         live = [t for t in self._scoped() if not t.excluded and not t.duplicate]
         ins, outs = dd(lambda: [0, 0.0, ""]), dd(lambda: [0, 0.0, ""])
         for t in live:
-            if t.is_credit and t.category not in NOT_MONEY_IN and t.kind != "card" and not _is_refund(t):
+            if t.is_credit and t.category == "Shared bills (paid back)":
                 k = ins[t.merchant]
-                k[0] += 1; k[1] += t.amount; k[2] = "Pay / income" if t.category == "Income" else "Other money in"
+                k[0] += 1; k[1] += t.amount; k[2] = "Paid back (lowers spending)"
+            elif t.is_credit and t.category not in NOT_MONEY_IN and t.kind != "card" and not _is_refund(t):
+                k = ins[t.merchant]
+                k[0] += 1; k[1] += t.amount
+                k[2] = ("Pay / income" if t.category == "Income" else
+                        "From a person" if t.category == "Zelle / Venmo / Cash App" else "Other money in")
             elif not t.is_credit and t.category in NON_SPENDING:
                 k = outs[t.merchant]
                 k[0] += 1; k[1] += t.amount

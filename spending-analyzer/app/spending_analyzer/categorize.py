@@ -133,6 +133,8 @@ GENERIC_PAYMENT = re.compile(
     r"|E-PAYMENT|PAYMENT RECEIVED|BILL PAY|ACH PMT|INTERNET PAYMENT|PAYMENT - WEB|PAYMENT)\b")
 # Money sent to people is real spending (rent to a landlord, splitting a bill); money received isn't income.
 P2P_CATEGORY = "Zelle / Venmo / Cash App"
+# Money someone pays you back (e.g. a partner's share of the bills): subtracted from your spending.
+REIMBURSEMENT = "Shared bills (paid back)"
 CARD_PAYMENT_OUT = re.compile(r"PAYMENT TO .{0,20}(CARD|CRD|VISA|MASTERCARD|AMEX)|(CARD|CRD) (ENDING|PMT|PAYMENT)")
 
 # Broad words that often mislead: matches on these are marked as a guess.
@@ -215,7 +217,7 @@ class Categorizer:
         for c in self.overrides.values():
             if c not in cats:
                 cats.append(c)
-        for extra in (P2P_CATEGORY, "Other"):
+        for extra in (P2P_CATEGORY, REIMBURSEMENT, "Other"):
             if extra not in cats:
                 cats.append(extra)
         return cats
@@ -224,13 +226,17 @@ class Categorizer:
                    money_in: bool = False) -> tuple[str, str]:
         """Return (category, source). Source: learned | merchant | keyword | guess | none."""
         if merchant in self.overrides:
-            return self.overrides[merchant], "learned"
+            o = self.overrides[merchant]
+            # "paid back" only describes money coming in; payments you send that person are categorised normally
+            if not (o == REIMBURSEMENT and not money_in):
+                return o, "learned"
         d = desc.upper()
         # Transfers/income keywords beat merchant names ("Payment to Chase card" stays a transfer)
-        if CARD_PAYMENT_OUT.search(d) or (money_in and GENERIC_PAYMENT.search(d)):
-            return "Transfers & Payments", "keyword"
+        # Zelle/Venmo first: "Zelle Payment From Jane" is money from a person, not a card payment
         if re.search(r"\b(ZELLE|VENMO|CASH ?APP|SQUARE CASH|APPLE CASH)\b", d):
             return P2P_CATEGORY, "keyword"   # money in this way counts as money in, unless matched to own account
+        if CARD_PAYMENT_OUT.search(d) or (money_in and GENERIC_PAYMENT.search(d)):
+            return "Transfers & Payments", "keyword"
         for cat, strong, _ in self._compiled:
             if cat in ("Transfers & Payments", "Savings & Investments") and strong.search(d):
                 return cat, "keyword"

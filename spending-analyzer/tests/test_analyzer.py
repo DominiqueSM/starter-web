@@ -196,6 +196,33 @@ class MoneyInVsOut(unittest.TestCase):
         self.assertEqual(len(a.compare["left_out"]), 5)
         self.assertFalse(any(s.title == "You spent more than came in" for s in a.suggestions))
 
+    def test_zelle_from_a_person_is_money_in(self):
+        a = self.run_analysis([
+            tx("2026-01-01", "ACME PAYROLL", 3000, credit=True),
+            tx("2026-01-05", "Zelle Payment From Jane Doe 21345", 600, credit=True),
+            tx("2026-01-06", "Zelle Transfer Conf# a1b2; Doe, Jane", 50, credit=True),
+            tx("2026-01-03", "Online Payment 4432178 To Open House", 1200),
+            tx("2026-01-04", "Online Transfer to SAV ...1234", 600)])   # same amount, own account: not her
+        self.assertAlmostEqual(a.compare["money_in"], 3650)
+        self.assertAlmostEqual(a.total_spent, 1200)
+
+    def test_shared_bills_paid_back_lower_spending(self):
+        tmp = tempfile.mkdtemp()
+        c = Categorizer(tmp)
+        c.set_override("Jane Doe", "Shared bills (paid back)")
+        txs = [tx("2026-01-01", "ACME PAYROLL", 3000, credit=True),
+               tx("2026-01-03", "Online Payment 4432178 To Open House", 1200),
+               tx("2026-01-08", "TXU ENERGY", 150),
+               tx("2026-01-05", "Zelle Payment From Jane Doe", 675, credit=True),
+               tx("2026-01-09", "Zelle Payment To Jane Doe", 40)]   # money sent to her is still yours
+        c.apply(txs)
+        from spending_analyzer.categorize import infer_rent
+        infer_rent(txs)
+        a = analyze(txs)
+        self.assertAlmostEqual(a.total_spent, 1200 + 150 + 40 - 675)
+        self.assertAlmostEqual(a.compare["money_in"], 3000)
+        self.assertEqual(next(t for t in txs if "To Jane" in t.description).category, "Zelle / Venmo / Cash App")
+
     def test_partial_months_are_left_out(self):
         # checking statement ends Jan 15 (one paycheck), card statement covers all of January
         txs = [tx("2026-01-01", "ACME PAYROLL", 2000, credit=True), tx("2026-01-03", "KROGER", 100),

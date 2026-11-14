@@ -12,8 +12,10 @@ import os
 import re
 from collections import defaultdict
 
-TRANSFER_WORDS = re.compile(r"TRANSFER|XFER|TFR|SAVINGS|CHECKING|SAV\b|CHK\b|SHARE|ZELLE|PAYMENT|PMT|PYMT|CARD|CRD",
-                            re.I)
+# Words that mark a move between your own accounts. Zelle/Venmo are deliberately not here: money from a
+# person (e.g. a partner's share of the bills) must not be mistaken for your own transfer.
+TRANSFER_WORDS = re.compile(r"TRANSFER|XFER|TFR|SAVINGS|CHECKING|\bSAV\b|\bCHK\b|\bSHARE\b", re.I)
+P2P_WORDS = re.compile(r"ZELLE|VENMO|CASH ?APP", re.I)
 
 
 def _same_account(a, b) -> bool:
@@ -83,8 +85,9 @@ def match_transfers(results, window_before=3, window_after=8) -> int:
                 continue
             if i.kind == "card":
                 ok = i.category == "Transfers & Payments" or re.search(r"PAYMENT|PMT|THANK", i.description, re.I)
-            else:   # bank to bank: needs transfer-like wording on either side
-                ok = bool(TRANSFER_WORDS.search(o.description) or TRANSFER_WORDS.search(i.description))
+            else:   # bank to bank: needs transfer wording on BOTH sides, and never money from a person
+                ok = (bool(TRANSFER_WORDS.search(o.description) and TRANSFER_WORDS.search(i.description))
+                      and not P2P_WORDS.search(i.description))
             if ok and (best is None or abs(gap) < best_gap):
                 best, best_gap = i, abs(gap)
         if best is not None:

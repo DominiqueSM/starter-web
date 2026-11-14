@@ -235,6 +235,10 @@ def brand_of(desc: str):
 
 def fallback_key(desc: str) -> str:
     s = unglue(desc)
+    m = re.match(r"^ZELLE\s+(TRANSFER|PAYMENT)?\s*CONF#?\s*\S+\s*;\s*(.+)$", s)
+    if m:   # "Zelle Transfer Conf# abc; Doe, Jane" -> "Jane Doe"
+        parts = [p.strip() for p in m.group(2).split(",")]
+        s = " ".join(reversed(parts)) if len(parts) == 2 else m.group(2)
     s = BILLPAY_RE.sub("", s)
     for _ in range(3):
         s = NOISE_RE.sub("", s).strip(" *")
@@ -244,6 +248,8 @@ def fallback_key(desc: str) -> str:
     s = re.sub(r"\b[\w-]*\d{3,}[\w-]*\b", " ", s)          # numbers and reference codes
     s = re.sub(r"\.(COM|NET|ORG|AI|IO|TV|CO)\b", " ", s)
     s = re.sub(r"[^A-Z0-9&' ]", " ", s)
+    s = re.sub(r"\bFROM\b", " ", s) if s.startswith("ZELLE") or s.startswith("VENMO") else s
+    s = re.sub(r"^(ZELLE|VENMO|CASH APP)\s+(?=[A-Z])(?!CASHOUT)", "", s)
     out = []
     for tok in s.split():
         if tok in STOP_TOKENS or tok in out:

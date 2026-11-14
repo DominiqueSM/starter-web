@@ -187,9 +187,15 @@ REFUND_RE = re.compile(r"\b(REFUND|RETURN|REVERSAL|REVERSED|CREDIT ADJ|ADJUSTMEN
 NOT_MONEY_IN = {"Transfers & Payments", "Savings & Investments"}
 
 
+REIMBURSEMENT = "Shared bills (paid back)"
+SHARED_CATS = ["Housing", "Utilities", "Phone & Internet", "Groceries", "Insurance", "Streaming & Subscriptions"]
+
+
 def _is_refund(t) -> bool:
     """A credit that gives back money you spent (rather than new money coming in)."""
-    if t.category in NOT_MONEY_IN or t.category == "Income":
+    if t.category == REIMBURSEMENT:
+        return True
+    if t.category in NOT_MONEY_IN or t.category == "Income" or t.category == "Zelle / Venmo / Cash App":
         return False
     if t.kind == "card":
         return True                    # on a card, any credit that isn't a payment is a refund/credit
@@ -234,16 +240,31 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None) -> Analysis:
         merch[t.merchant][0] += t.amount
         merch[t.merchant][1] += 1
     refund_total = 0.0
-    for t in refunds:   # net refunds against the category they came from (never below zero)
-        c = t.category if cat.get(t.category, 0) > 0 else max(cat, key=cat.get, default=None)
-        if c is None:
-            continue
-        take = min(t.amount, cat[c])
+    def net_off(t, c, amount):
+        take = min(amount, cat.get(c, 0.0))
+        if take <= 0:
+            return 0.0
         cat[c] -= take
         ym = _ym(t.date)
         mon[ym] = max(0.0, mon.get(ym, 0.0) - take)
         mon_cat[ym][c] = max(0.0, mon_cat[ym].get(c, 0.0) - take)
-        refund_total += take
+        return take
+
+    for t in refunds:   # net refunds against the category they came from (never below zero)
+        if t.category == REIMBURSEMENT:
+            # someone paying back their share: spread over shared bills, biggest first
+            left = t.amount
+            shared = sorted([c for c in SHARED_CATS if cat.get(c, 0) > 0], key=lambda c: -cat[c])
+            for c in shared + sorted([c for c in cat if c not in shared], key=lambda c: -cat[c]):
+                left -= net_off(t, c, left)
+                if left <= 0.005:
+                    break
+            refund_total += t.amount - max(left, 0.0)
+            continue
+        c = t.category if cat.get(t.category, 0) > 0 else max(cat, key=cat.get, default=None)
+        if c is None:
+            continue
+        refund_total += net_off(t, c, t.amount)
     cat = {c: v for c, v in cat.items() if v > 0.005}
     total_spent = sum(cat.values())
 
