@@ -43,6 +43,7 @@ class Suggestion:
     items: list = field(default_factory=list)
     confidence: str = "medium"   # high | medium | low
     kind: str = "save"           # save | warn | info
+    item_ids: list = field(default_factory=list)   # per item: transaction ids the user can act on
 
 
 @dataclass
@@ -122,65 +123,111 @@ def _kind(category: str, monthly_cost: float, freq: str) -> str:
     return "Regular"
 
 
+MIN_MONTHS = 3          # same amount, once a month, at least this many months in a row
+STILL_ACTIVE_DAYS = 45  # last charge must be this close to the end of that account's statements
+
+
+def _month_index(d: date) -> int:
+    return d.year * 12 + d.month
+
+
+def _amount_clusters(txs, category):
+    """Group charges with the same amount (a few cents' leeway; utility bills vary, so wider)."""
+    out = []
+    for t in sorted(txs, key=lambda t: t.amount):
+        if out:
+            ref = out[-1][0].amount
+            tol = ref * 0.25 if category == "Utilities" else max(0.05, ref * 0.01)
+            if abs(t.amount - ref) <= tol:
+                out[-1].append(t)
+                continue
+        out.append([t])
+    return [sorted(c, key=lambda t: t.date) for c in out]
+
+
+def _monthly_run(cl):
+    """Longest run, ending at the latest charge, of consecutive months with exactly one charge each."""
+    per = defaultdict(list)
+    for t in cl:
+        per[_month_index(t.date)].append(t)
+    m = _month_index(cl[-1].date)
+    run = []
+    while m in per and len(per[m]) == 1:
+        run.insert(0, per[m][0])
+        m -= 1
+    return run
+
+
+def _periodic_run(cl, lo, hi):
+    """Trailing run of charges where EVERY gap is between lo and hi days."""
+    run = [cl[-1]]
+    for a in reversed(cl[:-1]):
+        if lo <= (run[0].date - a.date).days <= hi:
+            run.insert(0, a)
+        else:
+            break
+    return run
+
+
 def find_recurring(spending) -> list[Recurring]:
+    """A charge is recurring only if the same amount is paid regularly for at least MIN_MONTHS months in a row,
+    on separate statements, and it is still going. Occasional purchases that happen to repeat an amount
+    (hotel stays, one-off payments) and payments that have stopped are not recurring."""
+    last_seen = defaultdict(lambda: date.min)   # end of each account's data
+    for t in spending:
+        k = t.account or t.group or t.source_file
+        last_seen[k] = max(last_seen[k], t.date)
     groups = defaultdict(list)
     for t in spending:
         groups[t.merchant].append(t)
     out = []
     for merchant, (txs, aliases) in _merge_similar_merchants(groups).items():
-        # the same charge listed twice (e.g. two descriptions of one payment) counts once
         seen, uniq = set(), []
-        for t in sorted(txs, key=lambda t: t.date):
-            k = (t.date, t.amount)
-            if k not in seen:
-                seen.add(k)
+        for t in sorted(txs, key=lambda t: t.date):   # the same charge listed twice counts once
+            if (t.date, t.amount) not in seen:
+                seen.add((t.date, t.amount))
                 uniq.append(t)
         txs = uniq
-        if len(txs) < 2:
-            continue
-        # A real recurring charge shows up on separate statements in different months. One document that
-        # lists many dated rows (a hotel bill, a loan's payment history) must not look like a subscription.
-        if len({t.source_file for t in txs}) < 2 or len({_ym(t.date) for t in txs}) < 2:
+        if len(txs) < MIN_MONTHS or len({t.source_file for t in txs}) < 2:
             continue
         cat = max({t.category for t in txs}, key=lambda c: sum(1 for t in txs if t.category == c))
         if cat in ("Fees & Interest", "Cash & ATM"):
             continue
-        months = {_ym(t.date) for t in txs}
-        amounts = [t.amount for t in txs]
-        med = statistics.median(amounts)
-        tol = 0.25 if cat in BILL_CATS else 0.05
-        consistent = [a for a in amounts if abs(a - med) <= max(1.0, med * tol)]
-        distinct = {round(x, 2) for x in amounts}
-        few_price_levels = len(distinct) <= 3 and len(amounts) > len(distinct)  # e.g. a price increase
-        if len(consistent) < max(2, int(len(amounts) * 0.7)) and not few_price_levels:
-            continue
-        gaps = [(b.date - a.date).days for a, b in zip(txs, txs[1:])]
-        gaps = [g for g in gaps if g > 0] or [0]
-        gap = statistics.median(gaps)
-        if 25 <= gap <= 35 and len(months) >= 2:
-            freq, per_month = "Monthly", med
-        elif 5 <= gap <= 9 and len(txs) >= 4:
-            freq, per_month = "Weekly", med * 4.33
-        elif 12 <= gap <= 17 and len(txs) >= 3:
-            freq, per_month = "Every 2 weeks", med * 2.17
-        elif 80 <= gap <= 100:
-            freq, per_month = "Quarterly", med / 3
-        elif 350 <= gap <= 380:
-            freq, per_month = "Yearly", med / 12
-        else:
-            continue
-        price_change = None
-        first_amt, last_amt = txs[0].amount, txs[-1].amount
-        if (len(distinct) <= 3 and last_amt == max(amounts) and last_amt > first_amt * 1.03
-                and last_amt - first_amt >= 0.5):
-            price_change = (first_amt, last_amt)
-            per_month *= last_amt / med   # cost going forward is the new price
-            med = last_amt
-        out.append(Recurring(
-            merchant=merchant, category=cat, typical_amount=round(med, 2), count=len(txs),
-            months=len(months), last_date=txs[-1].date, frequency=freq, monthly_cost=round(per_month, 2),
-            kind=_kind(cat, per_month, freq), price_change=price_change, aliases=aliases,
-        ))
+        found = []
+        clusters = _amount_clusters(txs, cat)
+        for cl in clusters:
+            end = last_seen[cl[-1].account or cl[-1].group or cl[-1].source_file]
+            if (end - cl[-1].date).days > STILL_ACTIVE_DAYS:
+                continue                      # stopped: not a current recurring charge
+            run = _monthly_run(cl)
+            freq, per_month = "Monthly", 1.0
+            if len(run) < MIN_MONTHS:
+                run = _periodic_run(cl, 12, 17)
+                freq, per_month = "Every 2 weeks", 26 / 12
+                if len({_ym(t.date) for t in run}) < MIN_MONTHS or len(run) < 6:
+                    run = _periodic_run(cl, 6, 8)
+                    freq, per_month = "Weekly", 52 / 12
+                    if len({_ym(t.date) for t in run}) < MIN_MONTHS or len(run) < 12:
+                        continue
+            if len({t.source_file for t in run}) < 2:
+                continue
+            amount = round(statistics.median(t.amount for t in run), 2)
+            # price change: an earlier same-company charge that ran monthly and stopped just before this one
+            price_change = None
+            for other in clusters:
+                if other is cl:
+                    continue
+                orun = _monthly_run(other)
+                if len(orun) >= 2 and 0 < (run[0].date - orun[-1].date).days <= 40 and other[-1].amount != amount:
+                    price_change = (round(orun[-1].amount, 2), amount)
+            found.append((run, freq, per_month, amount, price_change))
+        for run, freq, per_month, amount, price_change in found:
+            name = merchant if len(found) == 1 else f"{merchant} (${amount:,.2f})"
+            mc = amount * per_month
+            out.append(Recurring(
+                merchant=name, category=cat, typical_amount=amount, count=len(run),
+                months=len({_ym(t.date) for t in run}), last_date=run[-1].date, frequency=freq,
+                monthly_cost=round(mc, 2), kind=_kind(cat, mc, freq), price_change=price_change, aliases=aliases))
     out.sort(key=lambda r: -r.monthly_cost)
     return out
 
@@ -529,6 +576,7 @@ def build_suggestions(a: Analysis, all_txs) -> list[Suggestion]:
     for t in sorted(a.spending, key=lambda t: t.date):
         k = (t.merchant, t.amount)
         if k in seen and (t.date - seen[k].date).days <= 1 and t.source_file == seen[k].source_file \
+                and not (t.not_duplicate or seen[k].not_duplicate) \
                 and t.category not in ("Groceries", "Coffee Shops", "Fast Food", "Gas & Fuel", "Cash & ATM",
                                        "Auto & Transport", "Convenience Stores"):
             dups.append((seen[k], t))
@@ -538,7 +586,8 @@ def build_suggestions(a: Analysis, all_txs) -> list[Suggestion]:
             "Possible duplicate charges",
             "The same merchant charged the same amount within a day. Check them and dispute any double charges.",
             priority=1, kind="warn", confidence="medium",
-            items=[f"{b.date}  {b.description}  {money(b.amount)}  (also {a_.date})" for a_, b in dups[:15]]))
+            items=[f"{b.date}  {b.description}  {money(b.amount)}  (also {a_.date})" for a_, b in dups[:15]],
+            item_ids=[[a_.uid, b.uid] for a_, b in dups[:15]]))
 
     # 9. Spikes in the latest month
     months_sorted = sorted(a.by_month_category)

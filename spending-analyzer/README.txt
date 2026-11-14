@@ -68,7 +68,13 @@ HOW DOUBLE COUNTING IS AVOIDED
     statements with payment history, pay stubs) are skipped: their charges are already on your
     statements. They're listed on Files & checks as "Not a statement"; select one and click
     "Include / skip file" if it really is a statement.
-  * A charge only counts as recurring when it appears on separate statements in different months.
+  * A charge only counts as recurring when the same amount is paid once a month for at least 3
+    months in a row (on separate statements) and it is still being paid. Occasional purchases
+    that repeat an amount (e.g. hotel stays) and payments that stopped are not recurring.
+    Weekly / every-2-weeks charges need every gap to be regular for 3+ months.
+  * Not a duplicate: on the Cut back page click "Not a duplicate" next to a flagged pair, or select
+    a transaction on the Transactions page and click "Not a duplicate" (also brings back a row
+    that was hidden as "also in another statement"). Click again to undo.
     Double-click a recurring charge to see each transaction and the statement it came from.
   * Money sent to people (Zelle/Venmo/Cash App) counts as spending; money received counts as money in.
     If someone pays you back their share of bills (e.g. a partner's Zelle for rent/utilities),

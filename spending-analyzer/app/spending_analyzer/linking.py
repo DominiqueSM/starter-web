@@ -111,7 +111,7 @@ def remove_overlap_duplicates(results) -> int:
                     pool[(t.date, t.amount, t.is_credit)] += 1
             for t in b.transactions:
                 k = (t.date, t.amount, t.is_credit)
-                if not t.duplicate and pool[k] > 0:
+                if not t.duplicate and not t.not_duplicate and pool[k] > 0:
                     pool[k] -= 1
                     t.duplicate = True
                     t.note = "Also in " + os.path.basename(a.path) + " (counted once)"

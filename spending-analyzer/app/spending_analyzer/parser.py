@@ -48,6 +48,7 @@ class Transaction:
     transfer_match: bool = False
     parsed_credit: bool | None = None   # direction as read from the PDF (before user corrections)
     account_type: str = ""              # "savings" | "checking" | "" (unknown)
+    not_duplicate: bool = False         # the user said this is not a duplicate
 
     @property
     def is_spending(self) -> bool:

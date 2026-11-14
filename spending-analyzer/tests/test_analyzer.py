@@ -298,6 +298,52 @@ class MoneyInVsOut(unittest.TestCase):
         a = self.run_analysis(same_file)
         self.assertEqual(a.recurring, [])
 
+    def _recurring(self, rows):
+        txs = [tx(d, desc, amt, account=acct) for d, desc, amt, acct in rows]
+        for t in txs:
+            t.source_file = t.account + "-" + t.date.strftime("%Y%m") + ".pdf"   # one statement per month
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        return analyze(txs).recurring
+
+    def test_occasional_hotel_stays_are_not_recurring(self):   # from a real report
+        rows = [("2026-01-21", "HILTON ADDISON", 162.67, "C"), ("2026-01-27", "HILTON ADDISON", 138.42, "C"),
+                ("2026-06-06", "HILTON ADDISON", 215.30, "C"), ("2026-06-14", "HILTON HOUSTON", 215.30, "C"),
+                ("2026-06-15", "HILTON HOUSTON", 215.30, "C"), ("2026-07-20", "KROGER", 40.00, "C")]
+        self.assertEqual(self._recurring(rows), [])
+
+    def test_loan_payments_that_stopped_are_not_recurring(self):   # from a real report
+        rows = [("2025-12-16", "DeptEducation STUDENT LN", 182.56, "K"), ("2025-12-16", "DeptEducation STUDENT LN", 12.39, "K"),
+                ("2026-01-16", "DeptEducation STUDENT LN", 182.56, "K"), ("2026-01-16", "DeptEducation STUDENT LN", 12.39, "K"),
+                ("2026-02-17", "DeptEducation STUDENT LN", 182.56, "K"), ("2026-02-17", "DeptEducation STUDENT LN", 12.39, "K"),
+                ("2026-07-16", "DeptEducation STUDENT LN", 150.00, "K"), ("2026-08-03", "KROGER", 40.00, "K")]
+        self.assertEqual(self._recurring(rows), [])
+
+    def test_recurring_needs_three_months_in_a_row(self):
+        two = [("2026-01-05", "NETFLIX.COM", 15.49, "C"), ("2026-02-05", "NETFLIX.COM", 15.49, "C")]
+        self.assertEqual(self._recurring(two), [])
+        gap = two + [("2026-04-05", "NETFLIX.COM", 15.49, "C")]          # March missing
+        self.assertEqual(self._recurring(gap), [])
+        three = two + [("2026-03-05", "NETFLIX.COM", 15.49, "C")]
+        rec = self._recurring(three)
+        self.assertEqual([(r.merchant, r.frequency, r.typical_amount) for r in rec], [("Netflix", "Monthly", 15.49)])
+
+    def test_price_increase_is_one_charge(self):
+        rows = [(f"2026-0{m}-05", "NETFLIX.COM", 15.49, "C") for m in (1, 2, 3)]
+        rows += [(f"2026-0{m}-05", "NETFLIX.COM", 17.99, "C") for m in (4, 5, 6)]
+        rec = self._recurring(rows)
+        self.assertEqual(len(rec), 1)
+        self.assertEqual((rec[0].typical_amount, rec[0].price_change), (17.99, (15.49, 17.99)))
+
+    def test_marking_not_a_duplicate(self):
+        txs = [tx("2026-01-05", "BEST BUY 00012", 899.99, kind="card", account="C"),
+               tx("2026-01-05", "BEST BUY 00012", 899.99, kind="card", account="C")]
+        for i, t in enumerate(txs):
+            t.uid = f"u{i}"
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        self.assertTrue(any(s.title == "Possible duplicate charges" for s in analyze(txs).suggestions))
+        txs[1].not_duplicate = True
+        self.assertFalse(any(s.title == "Possible duplicate charges" for s in analyze(txs).suggestions))
+
     def test_partial_months_are_left_out(self):
         # checking statement ends Jan 15 (one paycheck), card statement covers all of January
         txs = [tx("2026-01-01", "ACME PAYROLL", 2000, credit=True), tx("2026-01-03", "KROGER", 100),

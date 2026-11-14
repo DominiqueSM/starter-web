@@ -656,11 +656,18 @@ class App:
             box = tk.Frame(inner, bg=T.SURFACE)
             box.pack(fill="x", pady=(8, 0))
             more = tk.Frame(inner, bg=T.SURFACE)
-            shown = s.items[:6]
-            for it in shown:
-                tk.Label(box, text="•  " + it, bg=T.SURFACE, fg=T.TEXT, font=T.FONTS["small"], anchor="w",
-                         justify="left").pack(anchor="w")
-            if len(s.items) > 6:
+            shown = s.items[:6] if not s.item_ids else s.items
+            for k, it in enumerate(shown):
+                row = tk.Frame(box, bg=T.SURFACE)
+                row.pack(anchor="w", fill="x")
+                tk.Label(row, text="•  " + it, bg=T.SURFACE, fg=T.TEXT, font=T.FONTS["small"], anchor="w",
+                         justify="left").pack(side="left")
+                if s.item_ids and k < len(s.item_ids):
+                    lnk = tk.Label(row, text="Not a duplicate", bg=T.SURFACE, fg=T.ACCENT, cursor="hand2",
+                                   font=T.FONTS["small"] + ("bold",))
+                    lnk.pack(side="left", padx=12)
+                    lnk.bind("<Button-1>", lambda e, ids=s.item_ids[k]: self.mark_not_duplicate(ids))
+            if len(s.items) > 6 and not s.item_ids:
                 for it in s.items[6:]:
                     tk.Label(more, text="•  " + it, bg=T.SURFACE, fg=T.TEXT, font=T.FONTS["small"],
                              anchor="w").pack(anchor="w")
@@ -702,8 +709,10 @@ class App:
                         command=self.render_transactions).pack(side="left")
         ttk.Checkbutton(row2, text="Show transfers, card payments & duplicates", variable=self.show_hidden,
                         command=self.render_transactions).pack(side="left", padx=14)
+        T.Button(row2, "Not a duplicate", self.toggle_not_duplicate, font=T.FONTS["small"] + ("bold",),
+                 pady=4).pack(side="right")
         tk.Label(row2, text="Exclude hides a row from all totals; select it again to bring it back.", bg=T.SURFACE,
-                 fg=T.SUBTLE, font=T.FONTS["tiny"]).pack(side="right")
+                 fg=T.SUBTLE, font=T.FONTS["tiny"]).pack(side="right", padx=10)
         outer, self.tx_tree = self._table(page, [
             ("Date", "Date", 92, "w", False), ("Description", "Description", 280, "w", True),
             ("Company", "Company", 150, "w", False), ("Category", "Category", 170, "w", False),
@@ -1124,6 +1133,9 @@ class App:
             if t.uid in flips:
                 t.is_credit = not t.is_credit
         self.cat.apply(self.transactions)
+        not_dup = set(self.settings.get("not_duplicates", []))
+        for t in self.transactions:
+            t.not_duplicate = t.uid in not_dup
         one_offs = self.settings.get("tx_categories", {})
         for t in self.transactions:
             if t.uid in one_offs:
@@ -1261,6 +1273,25 @@ class App:
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
         win.grab_set()
         cb.focus_set()
+
+    def mark_not_duplicate(self, uids, on=True):
+        nd = set(self.settings.get("not_duplicates", []))
+        for u in uids:
+            (nd.add if on else nd.discard)(u)
+        self.settings["not_duplicates"] = sorted(nd)
+        self._save_settings()
+        self.rebuild()
+
+    def toggle_not_duplicate(self):
+        sel = self._selected()
+        if not sel:
+            messagebox.showinfo(APP_NAME, "Select the transaction(s) that are not duplicates first.")
+            return
+        nd = set(self.settings.get("not_duplicates", []))
+        turn_on = not all(t.uid in nd for t in sel)
+        self.mark_not_duplicate([t.uid for t in sel], on=turn_on)
+        self.set_status(("Marked as not a duplicate: counted normally." if turn_on else
+                         "Duplicate check turned back on for the selection."), T.GOOD)
 
     def toggle_exclude(self):
         sel = self._selected()
