@@ -501,6 +501,7 @@ class App(PlanningPages):
         so, self.cf_summary = T.card(page, padding=16)
         so.grid(row=0, column=0, sticky="ew")
         tk.Label(page, text="Only whole months covered by your statements are compared (others are greyed out). "
+                            "* Moved in / card payments / transfers / savings are money between your own accounts. "
                             "Card payments, transfers between your accounts and money moved to savings are shown "
                             "but not counted as spending. Refunds are subtracted from spending. Money from a person (e.g. "
                             "Zelle) counts as money in; if it's their share of bills, set its category to "
@@ -509,12 +510,13 @@ class App(PlanningPages):
                  wraplength=1000).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         outer, self.cf_tree = self._table(page, [
             ("Month", "Month", 72, "w", False), ("In", "Money in", 85, "e", False),
-            ("Pay", "of which pay", 88, "e", False), ("Spent", "Spent", 85, "e", False),
+            ("Pay", "of which pay", 84, "e", False), ("MovedIn", "Moved in*", 76, "e", False),
+            ("Spent", "Spent", 85, "e", False),
             ("Cards", "on cards", 75, "e", False), ("Bank", "from bank", 78, "e", False),
             ("Net", "Left over", 85, "e", False), ("Rate", "Saved %", 66, "e", False),
             ("Refunds", "Refunds", 70, "e", False), ("CardPay", "Card pmts*", 80, "e", False),
             ("Transfers", "Transfers*", 80, "e", False), ("Saved", "Savings*", 72, "e", False),
-            ("Note", "", 90, "w", True)])
+            ("Note", "", 60, "w", True)])
         outer.grid(row=2, column=0, sticky="nsew")
         bottom = tk.Frame(page, bg=T.BG)
         bottom.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
@@ -586,7 +588,7 @@ class App(PlanningPages):
                 tags.append("odd")
             net = r["money_in"] - r["spent"]
             self.cf_tree.insert("", "end", tags=tags, values=(
-                r["month"], f(r["money_in"]), f(r["income"]), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
+                r["month"], f(r["money_in"]), f(r["income"]), f(r.get("moved_in", 0)), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
                 f"{net:,.2f}" if r["has_bank"] else "", f"{r['rate']:.0%}" if r.get("rate") is not None else "",
                 f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]), f(r["saved"]), note))
         from collections import defaultdict as dd
@@ -597,6 +599,9 @@ class App(PlanningPages):
             if t.is_credit and t.category == "Shared bills (paid back)":
                 k = ins[t.merchant]
                 k[0] += 1; k[1] += t.amount; k[2] = "Paid back (lowers spending)"
+            elif t.is_credit and t.category in NOT_MONEY_IN and t.kind != "card":
+                k = ins[t.merchant]
+                k[0] += 1; k[1] += t.amount; k[2] = "Your other account (not new)"
             elif t.is_credit and t.category not in NOT_MONEY_IN and t.kind != "card" and not _is_refund(t):
                 k = ins[t.merchant]
                 k[0] += 1; k[1] += t.amount
@@ -857,14 +862,17 @@ class App(PlanningPages):
     # ================================================================ folders
     def _build_folders(self, page):
         tk.Label(page, text="Each subfolder of the chosen folder is a group (e.g. one per card or account). "
-                            "Double-click a row to look at just that folder.", bg=T.BG, fg=T.MUTED,
-                 font=T.FONTS["small"]).pack(anchor="w", pady=(0, 8))
+                            "Moved in / out is money between your own accounts (e.g. checking to savings): it isn't "
+                            "new money or spending. Double-click a row to look at just that folder.", bg=T.BG, fg=T.MUTED,
+                 font=T.FONTS["small"], wraplength=1000, justify="left", anchor="w").pack(anchor="w", fill="x",
+                                                                                         pady=(0, 8))
         outer, self.group_tree = self._table(page, [
-            ("Folder", "Folder", 220, "w", True), ("Files", "Files", 60, "center", False),
-            ("Transactions", "Transactions", 100, "center", False), ("Spent", "Spent", 110, "e", False),
-            ("Per month", "Per month", 100, "e", False), ("Money in", "Money in", 110, "e", False),
-            ("Fees", "Fees & interest", 110, "e", False), ("Top", "Biggest category", 170, "w", False),
-            ("Period", "Period", 170, "w", False)])
+            ("Folder", "Folder", 160, "w", True), ("Files", "Files", 50, "center", False),
+            ("Transactions", "Rows", 50, "center", False), ("Spent", "Spent", 90, "e", False),
+            ("Per month", "Per month", 80, "e", False), ("Money in", "New money in", 100, "e", False),
+            ("MovedIn", "Moved in", 80, "e", False), ("MovedOut", "Moved out", 85, "e", False),
+            ("Fees", "Fees", 60, "e", False), ("Top", "Biggest category", 130, "w", False),
+            ("Period", "Period", 120, "w", False)])
         outer.pack(fill="both", expand=True)
         self.group_tree.bind("<Double-1>", self._open_group)
 
@@ -883,13 +891,14 @@ class App(PlanningPages):
         if not self.transactions:
             return
         for i, g in enumerate(summarize_groups([t for t in self.transactions], self.file_results, ALL_FOLDERS)):
-            period = f"{g['first']:%b %Y} – {g['last']:%b %Y}" if g["first"] else "–"
+            period = f"{g['first']:%b '%y} – {g['last']:%b '%y}" if g["first"] else "–"
             tags = ["bold"] if g["name"] == ALL_FOLDERS else []
             if i % 2:
                 tags.append("odd")
             tv.insert("", "end", tags=tags, values=(
                 g["name"], g["files"], g["transactions"], f"{g['spent']:,.2f}", f"{g['per_month']:,.2f}",
-                f"{g['money_in']:,.2f}", f"{g['fees']:,.2f}", g["top_category"], period))
+                f"{g['money_in']:,.2f}", f"{g['moved_in']:,.2f}", f"{g['moved_out']:,.2f}", f"{g['fees']:,.2f}",
+                g["top_category"], period))
 
     # ================================================================ files
     def _build_files(self, page):

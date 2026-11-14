@@ -104,5 +104,58 @@ class Coverage(unittest.TestCase):
         self.assertEqual(a.compare["months"], ["2026-01", "2026-03"])
 
 
+class OwnAccounts(unittest.TestCase):
+    """Checking -> Chase savings twice a month on payday, then Chase savings -> Capital One savings."""
+
+    def build(self, with_c1=True):
+        from spending_analyzer.insights import summarize_groups
+        from spending_analyzer.linking import link
+
+        def acct(group, bank, last4, atype, rows):
+            info = StatementInfo(kind="bank", bank=bank, last4=last4, account_type=atype,
+                                 period_start=date(2026, 1, 1), period_end=date(2026, 1, 31))
+            txs = []
+            for d, desc, amt, credit in rows:
+                t = tx(d, desc, amt, credit=credit, src=f"{group}.pdf")
+                t.account, t.account_type, t.group = info.account_key, atype, group
+                txs.append(t)
+            return NS(path=f"{group}.pdf", status="ok", method="positioned", group=group, info=info,
+                      transactions=txs, duplicates_removed=0)
+        res = [acct("chase_checking", "Chase", "1234", "checking", [
+                   ("2026-01-01", "ACME CORP PAYROLL PPD", 3000, True), ("2026-01-15", "ACME CORP PAYROLL PPD", 3000, True),
+                   ("2026-01-01", "Online Transfer To Sav ...5678 Transaction#: 111", 500, False),
+                   ("2026-01-15", "Online Transfer To Sav ...5678 Transaction#: 222", 500, False),
+                   ("2026-01-09", "KROGER #622", 200, False)]),
+               acct("chase_savings", "Chase", "5678", "savings", [
+                   ("2026-01-01", "Online Transfer From Chk ...1234 Transaction#: 111", 500, True),
+                   ("2026-01-15", "Online Transfer From Chk ...1234 Transaction#: 222", 500, True),
+                   ("2026-01-20", "CAPITAL ONE DES:TRANSFER ID:999", 300, False)])]
+        if with_c1:
+            res.append(acct("c1_savings", "Capital One", "4444", "savings", [
+                ("2026-01-21", "Deposit from JPMorgan Chase Bank, N.A.", 300, True),
+                ("2026-01-31", "Monthly Interest Paid", 2.0, True)]))
+        txs = [t for r in res for t in r.transactions]
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        link(res)
+        return analyze(txs), {g["name"]: g for g in summarize_groups(txs, res)}
+
+    def test_savings_folder_shows_money_moved_in(self):
+        a, groups = self.build()
+        self.assertAlmostEqual(groups["chase_savings"]["moved_in"], 1000)
+        self.assertAlmostEqual(groups["chase_savings"]["moved_out"], 300)
+        self.assertAlmostEqual(groups["c1_savings"]["moved_in"], 300)
+        self.assertAlmostEqual(groups["chase_checking"]["moved_out"], 1000)
+
+    def test_overall_totals_and_saving_counted_once(self):
+        a, _ = self.build()
+        self.assertAlmostEqual(a.total_spent, 200)
+        self.assertAlmostEqual(a.money_in, 6002)                         # pay + interest, no transfers
+        self.assertAlmostEqual(sum(r["saved"] for r in a.cashflow), 1000)  # not 1300
+
+    def test_checking_only_still_counts_as_saved(self):
+        a, _ = self.build(with_c1=False)
+        self.assertAlmostEqual(sum(r["saved"] for r in a.cashflow), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

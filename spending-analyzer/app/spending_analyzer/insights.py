@@ -354,12 +354,13 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
                 rows[ym]["income" if t.category == "Income" else "other_in"] += t.amount
             elif t in refunds:
                 rows[ym]["refunds"] += t.amount
+            elif t.category in NOT_MONEY_IN:
+                rows[ym]["moved_in"] += t.amount     # from your other accounts (incl. card payments received)
         else:
             if t.category in NON_SPENDING:
-                key = {"Savings & Investments": "saved"}.get(t.category,
-                                                             "card_payments" if t.transfer_match or "CARD" in
-                                                             t.description.upper() or "CRD" in t.description.upper()
-                                                             else "transfers")
+                to_card = (t.note or "").startswith("Paid to card") or re.search(r"CARD|\bCRD\b", t.description.upper())
+                key = "saved" if t.category == "Savings & Investments" else (
+                    "card_payments" if to_card else "transfers")
                 rows[ym][key] += t.amount
             else:
                 rows[ym]["spent_card" if t.kind == "card" else "spent_bank"] += t.amount
@@ -370,6 +371,7 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
                          "money_in": r["income"] + r["other_in"], "spent": mon.get(ym, 0.0),
                          "spent_card": r["spent_card"], "spent_bank": r["spent_bank"], "refunds": r["refunds"],
                          "card_payments": r["card_payments"], "transfers": r["transfers"], "saved": r["saved"],
+                         "moved_in": r["moved_in"],
                          "has_bank": ym in bank_months, "partial": False})
     if coverage:
         # coverage: (kind, start, end) or (kind, start, end, account). A month is compared only when every
@@ -703,7 +705,10 @@ def summarize_groups(transactions, file_results, all_label="All folders") -> lis
         return {"name": name, "files": nfiles, "transactions": len(txs), "spent": a.total_spent,
                 "per_month": a.total_spent / a.months if a.spending else 0.0, "money_in": a.total_in,
                 "fees": fees, "top_category": a.by_category[0][0] if a.by_category else "-",
-                "first": a.first_date, "last": a.last_date}
+                "moved_in": sum(c["moved_in"] for c in a.cashflow),
+                "moved_out": sum(c["transfers"] + c["saved"] + c["card_payments"] for c in a.cashflow),
+                "saved": sum(c["saved"] for c in a.cashflow),
+                "first": min((t.date for t in txs), default=None), "last": max((t.date for t in txs), default=None)}
 
     rows = [row(g, txs, files[g]) for g, txs in by_group.items()]
     rows.sort(key=lambda r: -r["spent"])

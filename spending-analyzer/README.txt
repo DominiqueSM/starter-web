@@ -132,6 +132,10 @@ HOW DOUBLE COUNTING IS AVOIDED
     remembers that person, and from then on their payments lower your spending on bills instead.
     Money you send them is still counted normally.
   * Money moved to savings or investments (Robinhood, Fidelity, Coinbase...) is not spending.
+  * Money moved between your own accounts (checking -> savings -> another bank's savings) isn't
+    new money either. The By folder page shows it per account as "Moved in" / "Moved out", so a
+    savings folder shows its deposits there, and Cash flow has a "Moved in" column. Saving is
+    counted once: moving money on from one savings account to another isn't counted as saved again.
   * Money moved between your bank and another bank (e.g. Chase -> Capital One savings) is not
     spending, and money moved back is not new money in. Add both banks' statements and the two
     sides are matched automatically; transfers into a savings account show as "Saved" on the

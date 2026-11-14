@@ -59,13 +59,18 @@ def classify_bank_moves(results) -> int:
             if t.category_source == "keyword" and t.category not in ("Transfers & Payments", "Income", "Other"):
                 continue
             d = t.description
+            # "Online Transfer to Sav ...5678" out of checking: that's saving, even without the savings statement
+            if (not t.is_credit and t.category == "Transfers & Payments" and r.info.account_type != "savings"
+                    and SAVINGS_HINT.search(d) and not t.transfer_match):
+                t.category = "Savings & Investments"
+                continue
             m = ANY_BANK.search(d)
             if not m or REAL_SPENDING.search(d):
                 continue
             # a deposit at Chase that just says "Chase" isn't a transfer from another bank
             if own and re.search(BANK_ALIASES.get(own, "^$"), m.group(0), re.I) and not SAVINGS_HINT.search(d):
                 continue
-            if not t.is_credit and SAVINGS_HINT.search(d):
+            if not t.is_credit and SAVINGS_HINT.search(d) and r.info.account_type != "savings":
                 t.category = "Savings & Investments"
             else:
                 t.category = "Transfers & Payments"
@@ -182,8 +187,10 @@ def match_transfers(results, window_before=3, window_after=8) -> int:
         if best is not None:
             used.add(id(best))
             where = best.account or os.path.basename(os.path.dirname(best.source_file)) or "another account"
-            saved = o.category == "Savings & Investments" or (best.kind != "card" and (
-                best.account_type == "savings" or SAVINGS_HINT.search(best.description + " " + o.description)))
+            # Money is "saved" once: moving it on from one savings account to another isn't saving it again
+            saved = o.account_type != "savings" and (o.category == "Savings & Investments" or (
+                best.kind != "card" and (best.account_type == "savings"
+                                         or SAVINGS_HINT.search(best.description + " " + o.description))))
             o.category = "Savings & Investments" if saved else "Transfers & Payments"
             o.category_source, o.transfer_match = "matched", True
             o.note = ("Paid to card " if best.kind == "card" else "Moved to ") + where + f" on {best.date}"
