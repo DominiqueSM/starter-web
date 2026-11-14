@@ -49,6 +49,9 @@ repository > Actions tab > "Spending Analyzer - test and build" > latest run > A
                         JOB PAY only. Pay is recognised from payroll wording (PAYROLL, DIRECT DEP,
                         SALARY, ADP, Gusto...); under "Where money in came from" select a payer
                         and click "Job income: yes / no" to change what counts (remembered).
+                        The job-pay rate treats money people send you (Zelle, Venmo, Cash App,
+                        e.g. a partner's share of the bills) as paying back shared costs, so it
+                        shows what you keep from your paycheck after your share of expenses.
                         and what wasn't (card payments, transfers, savings). Start here if a
                         total looks wrong.
        Cut back         ranked suggestions with estimated savings and confidence

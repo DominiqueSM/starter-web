@@ -578,6 +578,13 @@ class App(PlanningPages):
             if a.savings:
                 note += (f" \u00B7 savings rates use the last {len(a.savings['months'])} full month(s); job pay = "
                          f"{money(a.savings['pay'] / len(a.savings['months']))}/month (set what counts below)")
+                if a.savings.get("from_people"):
+                    note += (f". The job-pay rate counts {money(a.savings['from_people'] / len(a.savings['months']))}"
+                             "/month you received from people (Zelle etc.) as their share of shared costs")
+                if a.savings.get("pay_rate") is not None and a.savings["pay_rate"] < 0 and a.savings.get("maybe_pay"):
+                    note += (". Is one of these your paycheck? " + ", ".join(
+                        f"{m} ({money(v)}/month)" for m, v in a.savings["maybe_pay"]) +
+                        ": select it below and click Job income: yes / no")
             if c["left_out"]:
                 note += f" · {len(c['left_out'])} partly covered month(s) left out"
             tk.Label(self.cf_summary, text=note, bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["small"],

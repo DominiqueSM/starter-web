@@ -256,16 +256,35 @@ def _savings(cashflow, compare):
     for r in cashflow:
         ok = r["has_bank"]
         r["rate"] = (r["money_in"] - r["spent"]) / r["money_in"] if ok and r["money_in"] > 0 else None
-        r["pay_rate"] = (r["pay"] - r["spent"]) / r["pay"] if ok and r["pay"] > 0 else None
+        # money people send you (a partner's share of the bills) pays back shared costs, so it's taken
+        # off your spending for this rate: what you keep from your paycheck after YOUR share of expenses
+        r["pay_rate"] = (r["pay"] + r["from_people"] - r["spent"]) / r["pay"] if ok and r["pay"] > 0 else None
     if not compare:
         return None
     months = compare["months"][-3:]
     rows = [r for r in cashflow if r["month"] in months]
-    inn, out, pay = (sum(r[k] for r in rows) for k in ("money_in", "spent", "pay"))
+    inn, out, pay, people = (sum(r[k] for r in rows) for k in ("money_in", "spent", "pay", "from_people"))
     if inn <= 0:
         return None
     return {"rate": (inn - out) / inn, "months": months, "money_in": inn, "spent": out, "saved": inn - out,
-            "pay": pay, "pay_rate": (pay - out) / pay if pay > 0 else None}
+            "pay": pay, "from_people": people,
+            "pay_rate": (pay + people - out) / pay if pay > 0 else None}
+
+
+def _maybe_pay(money_in_txs, pay_sources):
+    """Regular, paycheck-sized deposits that aren't counted as job pay: candidates to mark as job income."""
+    by = defaultdict(list)
+    for t in money_in_txs:
+        if not is_pay(t, pay_sources) and t.category != "Zelle / Venmo / Cash App" and \
+                not (pay_sources and t.merchant in pay_sources):
+            by[t.merchant].append(t)
+    out = []
+    for m, txs in by.items():
+        months = {_ym(t.date) for t in txs}
+        med = statistics.median(t.amount for t in txs)
+        if len(months) >= 2 and med >= 300:
+            out.append((m, sum(t.amount for t in txs) / len(months)))
+    return sorted(out, key=lambda x: -x[1])[:3]
 
 
 REFUND_RE = re.compile(r"\b(REFUND|RETURN|REVERSAL|REVERSED|CREDIT ADJ|ADJUSTMENT|CHARGEBACK|DISPUTE|RETURNED)\b", re.I)
@@ -374,6 +393,8 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
                 rows[ym]["income" if t.category == "Income" else "other_in"] += t.amount
                 if is_pay(t, pay_sources):
                     rows[ym]["pay"] += t.amount
+                elif t.category == "Zelle / Venmo / Cash App":
+                    rows[ym]["from_people"] += t.amount   # e.g. a partner's share of the bills
             elif t in refunds:
                 rows[ym]["refunds"] += t.amount
             elif t.category in NOT_MONEY_IN:
@@ -391,6 +412,7 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
         r = rows[ym]
         cashflow.append({"month": ym, "income": r["income"], "other_in": r["other_in"],
                          "money_in": r["income"] + r["other_in"], "spent": mon.get(ym, 0.0), "pay": r["pay"],
+                         "from_people": r["from_people"],
                          "spent_card": r["spent_card"], "spent_bank": r["spent_bank"], "refunds": r["refunds"],
                          "card_payments": r["card_payments"], "transfers": r["transfers"], "saved": r["saved"],
                          "moved_in": r["moved_in"],
@@ -431,6 +453,8 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
         data_quality=data_quality, money_in=sum(t.amount for t in money_in_txs), refunds=refund_total,
         cashflow=cashflow, compare=compare, savings=_savings(cashflow, compare),
     )
+    if a.savings:
+        a.savings["maybe_pay"] = _maybe_pay(money_in_txs, pay_sources)
     a.suggestions = build_suggestions(a, transactions)
     if gaps:
         a.suggestions.insert(0, Suggestion(

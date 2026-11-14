@@ -105,13 +105,39 @@ class JobPaySavingsRate(unittest.TestCase):
         s = self.build().savings
         self.assertAlmostEqual(s["rate"], (15015 - 9000) / 15015)    # all money in
         self.assertAlmostEqual(s["pay"], 12000)                       # only the paychecks
-        self.assertAlmostEqual(s["pay_rate"], (12000 - 9000) / 12000)
+        self.assertAlmostEqual(s["from_people"], 3000)              # partner's Zelle for her share
+        self.assertAlmostEqual(s["pay_rate"], (12000 + 3000 - 9000) / 12000)
 
     def test_you_decide_what_counts_as_pay(self):
         s = self.build({"Jane Doe": True, "Acme Payroll": True}).savings   # e.g. a side job paid by Zelle
         self.assertAlmostEqual(s["pay"], 15000)
         s = self.build({"Acme Payroll": False}).savings
         self.assertIsNone(s["pay_rate"])
+
+
+class NegativePayRate(unittest.TestCase):
+    def test_partner_share_keeps_job_pay_rate_positive(self):
+        # $4,000 pay, $5,000 of bills of which the partner Zelles $1,500: you keep $500 = 12.5% of pay
+        txs = []
+        for m in ("01", "02", "03"):
+            txs += [tx(f"2026-{m}-01", "ACME CORP PAYROLL PPD", 4000, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-03", "Zelle Payment From Jane Doe", 1500, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-02", "OPENHOUSETEXAS 7YR06G", 5000, src=f"{m}.pdf")]
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        self.assertAlmostEqual(analyze(txs).savings["pay_rate"], 0.125)
+
+    def test_unrecognised_paycheck_is_suggested(self):
+        txs = []
+        for m in ("01", "02", "03"):
+            txs += [tx(f"2026-{m}-01", "ACME CORP PAYROLL PPD", 1000, credit=True, src=f"{m}.pdf"),
+                    tx(f"2026-{m}-15", "INITECH LLC 88812", 2500, credit=True, src=f"{m}.pdf"),   # 2nd job, no payroll word
+                    tx(f"2026-{m}-05", "KROGER #622", 2000, src=f"{m}.pdf")]
+        Categorizer(tempfile.mkdtemp()).apply(txs)
+        s = analyze(txs).savings
+        self.assertLess(s["pay_rate"], 0)
+        self.assertEqual([m for m, _ in s["maybe_pay"]], ["Initech"])
+        s2 = analyze(txs, pay_sources={"Initech": True}).savings
+        self.assertAlmostEqual(s2["pay_rate"], (3500 - 2000) / 3500)
 
 
 class Coverage(unittest.TestCase):
