@@ -76,10 +76,18 @@ def classify_bank_moves(results) -> int:
 
 
 def _same_account(a, b) -> bool:
-    ka, kb = a.info.account_key, b.info.account_key
-    if ka and kb:
-        return ka == kb
-    return a.group == b.group and a.info.kind == b.info.kind and a.info.kind != "unknown"
+    """Same account across formats: a PDF statement says "Chase card ...1234", its CSV download may only say
+    "...1234". Last 4 digits decide when both have them; otherwise the same folder and the same kind."""
+    ia, ib = a.info, b.info
+    if ia.last4 and ib.last4:
+        if ia.last4 != ib.last4:
+            return False
+        if "unknown" not in (ia.kind, ib.kind) and ia.kind != ib.kind:
+            return False
+        return not (ia.bank and ib.bank and ia.bank != ib.bank)
+    if a.group != b.group:
+        return False
+    return ia.kind == ib.kind and ia.kind != "unknown" or (ia.kind == "unknown") != (ib.kind == "unknown")
 
 
 def _span(fr):
@@ -94,6 +102,13 @@ def _span(fr):
     return lo, hi
 
 
+def _mark_dup(t, orig, a, b, used):
+    used.add(id(orig))
+    t.duplicate = True
+    t.note = "Also in " + os.path.basename(a.path) + " (counted once)"
+    b.duplicates_removed += 1
+
+
 def remove_overlap_duplicates(results) -> int:
     files = [r for r in results if r.transactions]
     removed = 0
@@ -105,17 +120,28 @@ def remove_overlap_duplicates(results) -> int:
             sb = _span(b)
             if not sa or not sb or sb[0] > sa[1] or sa[0] > sb[1]:
                 continue   # periods don't overlap
-            pool = defaultdict(int)
-            for t in a.transactions:
-                if not t.duplicate:
-                    pool[(t.date, t.amount, t.is_credit)] += 1
+            pool = [t for t in a.transactions if not t.duplicate]
+            used = set()
+            exact = defaultdict(list)
+            for t in pool:
+                exact[(t.date, t.amount, t.is_credit)].append(t)
+            later = []
             for t in b.transactions:
-                k = (t.date, t.amount, t.is_credit)
-                if not t.duplicate and not t.not_duplicate and pool[k] > 0:
-                    pool[k] -= 1
-                    t.duplicate = True
-                    t.note = "Also in " + os.path.basename(a.path) + " (counted once)"
-                    b.duplicates_removed += 1
+                if t.duplicate or t.not_duplicate:
+                    continue
+                cands = [c for c in exact.get((t.date, t.amount, t.is_credit), []) if id(c) not in used]
+                if cands:
+                    _mark_dup(t, cands[0], a, b, used)
+                    removed += 1
+                else:
+                    later.append(t)
+            # A CSV may use the posting date where the statement uses the transaction date:
+            # same amount and direction, same company, within 3 days.
+            for t in later:
+                cands = [c for c in pool if id(c) not in used and c.amount == t.amount and c.is_credit == t.is_credit
+                         and abs((c.date - t.date).days) <= 3 and c.merchant and c.merchant == t.merchant]
+                if cands:
+                    _mark_dup(t, min(cands, key=lambda c: abs((c.date - t.date).days)), a, b, used)
                     removed += 1
     return removed
 

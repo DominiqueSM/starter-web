@@ -19,7 +19,7 @@ from datetime import date, timedelta
 
 from .pdftext import Line
 
-PARSER_VERSION = 6
+PARSER_VERSION = 7
 
 # ---------------------------------------------------------------- data classes
 
@@ -49,6 +49,7 @@ class Transaction:
     parsed_credit: bool | None = None   # direction as read from the PDF (before user corrections)
     account_type: str = ""              # "savings" | "checking" | "" (unknown)
     not_duplicate: bool = False         # the user said this is not a duplicate
+    tags: list = field(default_factory=list)
 
     @property
     def is_spending(self) -> bool:
@@ -71,6 +72,8 @@ class StatementInfo:
     balance_fails: int = 0
     account_type: str = ""            # "savings" | "checking" | ""
     doc_type: str = "statement"       # "statement" | "other" (receipt, hotel folio, invoice, loan statement...)
+    apr: float | None = None          # card purchase APR, e.g. 24.99
+    min_payment: float | None = None  # minimum payment due
     doc_reason: str = ""
 
     @property
@@ -339,6 +342,8 @@ def _statement_info(lines: list[Line], order_pref: str) -> StatementInfo:
             info.period_end = found[min(len(found) - 1, int(len(found) * 0.9))]
 
     info.doc_type, info.doc_reason = _document_type(full, info)
+    if info.kind == "card":
+        info.apr, info.min_payment = _card_terms(texts)
     info.opening_balance = _find_labeled_amount(texts, OPENING_RE)
     info.closing_balance = _find_labeled_amount(texts, CLOSING_RE)
     return info
@@ -354,6 +359,26 @@ OTHER_DOCS = [
     ("a bill or utility statement", r"SERVICE ADDRESS|METER|USAGE|KWH|BILLING PERIOD|PLAN CHARGES|DATA USAGE"),
     ("a pay stub", r"PAY STUB|EARNINGS|GROSS PAY|NET PAY|DEDUCTIONS|YTD"),
 ]
+
+
+APR_PURCHASE_RE = re.compile(r"\bPURCHASES?\b[^%\n]{0,50}?(\d{1,2}\.\d{1,3})\s*%", re.I)
+APR_ANY_RE = re.compile(r"(?:\bAPR\b|ANNUAL PERCENTAGE RATE)[^%\n]{0,60}?(\d{1,2}\.\d{1,3})\s*%", re.I)
+MIN_PAY_RE = re.compile(r"MINIMUM (?:PAYMENT|AMOUNT)(?: DUE)?\s*:?\s*\$?\s*([\d,]+\.\d{2})", re.I)
+
+
+def _card_terms(texts):
+    """Purchase APR and minimum payment from a card statement (used by the debt payoff planner)."""
+    apr = mn = None
+    for t in texts:
+        if apr is None:
+            m = APR_PURCHASE_RE.search(t) or APR_ANY_RE.search(t)
+            if m and 0 < float(m.group(1)) < 80:
+                apr = float(m.group(1))
+        if mn is None:
+            m = MIN_PAY_RE.search(t)
+            if m:
+                mn = float(m.group(1).replace(",", ""))
+    return apr, mn
 
 
 def _document_type(full: str, info: "StatementInfo"):

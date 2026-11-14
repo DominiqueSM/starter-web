@@ -10,10 +10,11 @@ from datetime import date, datetime
 
 from .parser import PARSER_VERSION, LineDiag, StatementInfo, Transaction, parse_statement
 from .pdftext import PasswordRequired, UnsupportedEncryption, extract_lines
+from .tabular import TABULAR_EXTS, parse_tabular
 
 log = logging.getLogger(__name__)
 
-__all__ = ["Transaction", "FileResult", "process_folder", "find_pdfs"]
+__all__ = ["Transaction", "FileResult", "process_folder", "find_statements"]
 
 
 @dataclass
@@ -40,12 +41,12 @@ def file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def find_pdfs(folder: str) -> list[str]:
+def find_statements(folder: str) -> list[str]:
     out = []
     for root, dirs, files in os.walk(folder):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         for fn in files:
-            if fn.lower().endswith(".pdf") and not fn.startswith("."):
+            if fn.lower().endswith((".pdf",) + TABULAR_EXTS) and not fn.startswith("."):
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
@@ -109,6 +110,12 @@ def _cache_save(cache_dir, sha, order_pref, fr: FileResult):
 
 def parse_file(path: str, sha: str, order_pref="auto", password=None, cache_dir=None) -> FileResult:
     fr = FileResult(path=path, sha1=sha)
+    if path.lower().endswith(TABULAR_EXTS):   # bank downloads: quick to read, no cache needed
+        fr.transactions, fr.info, fr.diags, fr.method = parse_tabular(path)
+        if not fr.transactions:
+            fr.status = "no-transactions"
+            fr.note = fr.info.recon_detail or "No transactions found in this file. See the line preview."
+        return fr
     cached = _cache_load(cache_dir, sha, order_pref) if not password else None
     if cached:
         fr.transactions, fr.info, fr.diags = cached["txs"], cached["info"], cached["diags"]
@@ -156,7 +163,7 @@ def process_folder(folder: str, progress=None, passwords=None, cache_dir=None, o
     passwords = passwords or {}
     results = []
     seen = {}
-    pdfs = find_pdfs(folder)
+    pdfs = find_statements(folder)
     for i, path in enumerate(pdfs):
         if progress:
             progress(i, len(pdfs), os.path.basename(path))

@@ -1,13 +1,15 @@
-SPENDING ANALYZER  (v2.0, works 100% offline)
+SPENDING ANALYZER  (v3.0, works 100% offline)
 =============================================
 
-Reads the PDF bank and credit-card statements in a folder and shows:
+Reads the bank and credit-card statements in a folder (PDF statements, and CSV or OFX/QFX
+downloads from your bank's website) and shows:
   * how much you really spend, per month and per category
   * subscriptions, bills and loans, one line per company (all the different ways
     "Netflix" can appear on a statement count as one)
   * fees and interest, possible duplicate charges, recurring charges that went up
   * a ranked list of "what to cut back on" with estimated savings and a confidence level
   * a self-check for every statement: do the transactions add up to the balances printed on it?
+  * monthly budgets per category, tags across categories, and a debt payoff planner
   * export to CSV, or an HTML report you can print or keep
 
 PRIVACY: the app never connects to the internet; it blocks network access inside its own
@@ -46,12 +48,54 @@ repository > Actions tab > "Spending Analyzer - test and build" > latest run > A
                         and what wasn't (card payments, transfers, savings). Start here if a
                         total looks wrong.
        Cut back         ranked suggestions with estimated savings and confidence
-       Transactions     everything found; search, filter, fix categories
+       Budgets          a monthly limit per category: spent vs. budget, left to spend (and per
+                        day for the current month), plus spending by tag
+       Transactions     everything found; search, filter by category or tag, fix categories, tag
        Recurring        subscriptions / bills & loans / regular spending, one line per company
+       Debt payoff      when you'll be debt-free, and what paying extra each month saves
        By folder        each subfolder side by side
-       Files & checks   what was read from each PDF, whether it adds up, and a
+       Files & checks   what was read from each file, whether it adds up, and a
                         line-by-line preview showing exactly what was read or skipped and why
+       Rules & backup   everything you've taught the app (categories, rules, tags, exclusions...)
+                        with Delete / Change category, and Back up / Restore
   Try it first with the "sample-statements (fake data)" folder (the locked sample's password is: secret).
+
+
+CSV AND OFX/QFX DOWNLOADS
+-------------------------
+Most banks let you download your transactions as CSV, and many as OFX/QFX ("Quicken"/"Money").
+These are read more reliably than PDFs; put them in the same folder (or subfolders).
+  * CSV columns are recognised automatically (date, description, amount or separate debit/credit,
+    balance, type), including files with summary lines above the table and files with no header.
+  * Money in/out: from debit/credit columns, a DEBIT/CREDIT or Sale/Payment column, the running
+    balance, or else the sign most rows use (purchases outnumber payments).
+  * Pending transactions are skipped; import them once they post. Every skipped row is listed with
+    the reason on Files & checks.
+  * The bank and last 4 digits come from the file name (e.g. Chase1234_Activity...csv) or a card /
+    account column. A CSV and a PDF statement of the same account can sit side by side: rows in
+    both are counted once, even when the CSV uses the posting date (up to 3 days later).
+
+
+BUDGETS, TAGS AND DEBT PAYOFF
+-----------------------------
+  * Budgets: "Suggest budgets" fills in your typical month per category (the median of recent full
+    months), then lower the ones you want to cut. Double-click a category to change its budget.
+    Going over a budget shows up at the top of the Cut back page.
+  * Tags: select transactions > "Tag..." to label them across categories (e.g. "alcohol", "work",
+    "vacation 2026"), for a company, a description that contains some text, or only the selection.
+    See totals per tag on the Budgets page; filter by tag on Transactions.
+  * Debt payoff: cards come in from your newest statement (balance, APR and minimum payment are
+    read from it); add loans with "Add a debt...". Type an extra monthly amount and pick
+    Avalanche (highest rate first: least interest) or Snowball (smallest balance first: quick
+    wins). It shows your debt-free month and how much sooner, and how much less interest, paying
+    extra gets you. Cards you pay in full every month cost no interest and are left out.
+
+
+BACKUPS
+-------
+Rules & backup > "Back up..." saves every choice you've made (categories, rules, tags, budgets,
+debts, exclusions, not-a-duplicate marks) to one file. "Restore from backup..." loads it, e.g. on
+a new computer. Your statement files aren't in the backup; keep those yourself.
 
 
 HOW DOUBLE COUNTING IS AVOIDED
@@ -130,6 +174,9 @@ TIPS AND LIMITS
 Your settings, choices and a cache of read statements are in the ".spending_analyzer" folder in
 your home folder. app.log there records errors. category_rules.json holds the keyword list used
 for categories (edit with any text editor; delete it to restore defaults).
+
+Ideas credits: CSV import and budgets were inspired by Budgeter (MIT) and Num (AGPL-3.0); no code was
+copied from either.
 
 FOR DEVELOPERS: tests live in tests/ (python -m unittest discover -s tests). The fixture PDFs
 mimic real statement layouts; regenerate with tests/make_fixtures.py (needs reportlab).

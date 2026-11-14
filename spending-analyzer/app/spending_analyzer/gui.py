@@ -16,6 +16,8 @@ from .categorize import NON_SPENDING, Categorizer, infer_rent
 from .extract import parse_file, process_folder
 from .insights import analyze, money, summarize_groups
 from .linking import link
+from .gui_planning import PlanningPages
+from .planning import apply_tags
 from .report import export_csv, export_html
 
 log = logging.getLogger(__name__)
@@ -32,10 +34,13 @@ PAGES = [
     ("overview", "Overview", "◉", "Where your money goes"),
     ("cashflow", "Cash flow", "⇅", "Money in vs. money out, month by month, and exactly what was counted"),
     ("insights", "Cut back", "★", "Ranked ideas with estimated savings"),
+    ("budgets", "Budgets", "◔", "Monthly limits per category, and spending by tag"),
     ("transactions", "Transactions", "≡", "Everything found in your statements"),
     ("recurring", "Recurring", "⟳", "Subscriptions, bills and regular payments, one line per company"),
+    ("debt", "Debt payoff", "↘", "When you'll be debt-free, and what paying extra saves"),
     ("folders", "By folder", "▤", "Each subfolder side by side"),
-    ("files", "Files & checks", "✓", "What was read from each PDF, and whether it adds up"),
+    ("files", "Files & checks", "✓", "What was read from each file, and whether it adds up"),
+    ("rules", "Rules & backup", "⚙", "Everything you've taught the app, and backups of it"),
 ]
 RECON_LABEL = {"reconciled": ("✓ Adds up", T.GOOD), "balance-verified": ("✓ Balance checked", T.GOOD),
                "mismatch": ("⚠ Doesn't add up", T.WARN), "unverified": ("– Not checkable", T.MUTED)}
@@ -44,7 +49,9 @@ DIAG_STYLE = {"transaction": ("✓", T.GOOD), "continuation": ("+", T.INFO), "he
               "info": ("·", T.SUBTLE)}
 
 
-class App:
+class App(PlanningPages):
+    APP_NAME = APP_NAME
+
     def __init__(self, root: tk.Tk):
         self.root = root
         T.setup(root)
@@ -118,7 +125,7 @@ class App:
             bar = tk.Frame(row, bg=T.SIDEBAR, width=3)
             bar.pack(side="left", fill="y")
             lbl = tk.Label(row, text=f"{icon}   {title}", bg=T.SIDEBAR, fg=T.SIDEBAR_TEXT, font=T.FONTS["body"],
-                           anchor="w", padx=14, pady=9, cursor="hand2")
+                           anchor="w", padx=14, pady=7, cursor="hand2")
             lbl.pack(side="left", fill="x", expand=True)
             for w in (row, lbl):
                 w.bind("<Button-1>", lambda e, k=key: self.show_page(k))
@@ -194,6 +201,9 @@ class App:
         self._build_recurring(self.pages["recurring"])
         self._build_folders(self.pages["folders"])
         self._build_files(self.pages["files"])
+        self._build_budgets(self.pages["budgets"])
+        self._build_debt(self.pages["debt"])
+        self._build_rules(self.pages["rules"])
 
     def show_page(self, key):
         self.page = key
@@ -711,13 +721,19 @@ class App:
                         command=self.render_transactions).pack(side="left", padx=14)
         T.Button(row2, "Not a duplicate", self.toggle_not_duplicate, font=T.FONTS["small"] + ("bold",),
                  pady=4).pack(side="right")
+        T.Button(row2, "Tag…", self.tag_dialog, font=T.FONTS["small"] + ("bold",), pady=4).pack(side="right", padx=6)
+        self.tag_filter = tk.StringVar(value="All tags")
+        self.tag_combo = ttk.Combobox(row2, textvariable=self.tag_filter, state="readonly", width=16,
+                                      values=["All tags"])
+        self.tag_combo.pack(side="left", padx=(0, 6))
+        self.tag_combo.bind("<<ComboboxSelected>>", lambda e: self.render_transactions())
         tk.Label(row2, text="Exclude hides a row from all totals; select it again to bring it back.", bg=T.SURFACE,
                  fg=T.SUBTLE, font=T.FONTS["tiny"]).pack(side="right", padx=10)
         outer, self.tx_tree = self._table(page, [
             ("Date", "Date", 92, "w", False), ("Description", "Description", 280, "w", True),
             ("Company", "Company", 150, "w", False), ("Category", "Category", 170, "w", False),
             ("Amount", "Amount", 90, "e", False), ("Folder", "From statement", 170, "w", False),
-            ("Note", "Note", 160, "w", True)])
+            ("Tags", "Tags", 110, "w", False), ("Note", "Note", 150, "w", True)])
         outer.pack(fill="both", expand=True)
         self.tx_tree.bind("<Double-1>", lambda e: self.set_category_dialog())
         self.tx_sum = tk.Label(page, text="", bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], anchor="w")
@@ -738,7 +754,11 @@ class App:
                 continue
             if c and c != "All categories" and t.category != c:
                 continue
-            if q and q not in t.description.lower() and q not in t.category.lower() and q not in t.merchant.lower():
+            if q and q not in t.description.lower() and q not in t.category.lower() and q not in t.merchant.lower() \
+                    and not any(q in g.lower() for g in t.tags):
+                continue
+            tg = self.tag_filter.get()
+            if tg and tg != "All tags" and tg not in t.tags:
                 continue
             rows.append(t)
         rows.sort(key=lambda t: t.date, reverse=True)
@@ -758,7 +778,7 @@ class App:
             self._tx_index[iid] = t
             tv.insert("", "end", iid=iid, tags=tags, values=(
                 t.date.isoformat(), t.description, t.merchant, t.category + src_mark.get(t.category_source, ""),
-                amt, os.path.basename(t.source_file), note))
+                amt, os.path.basename(t.source_file), ", ".join(t.tags), note))
             if t.is_spending and t.category not in NON_SPENDING:
                 total += t.amount
         self.tx_sum.configure(text=f"{len(rows)} shown · spending in view {money(total)}   ·   "
@@ -1056,7 +1076,7 @@ class App:
         if not results:
             self.set_status("No PDF files found in that folder (subfolders included).", T.WARN)
         else:
-            msg = f"Read {len(results)} PDFs · {len(self.transactions)} transactions from {n_ok} statements"
+            msg = f"Read {len(results)} files · {len(self.transactions)} transactions from {n_ok} statements"
             if mism:
                 msg += f" · {mism} don't add up (see Files & checks)"
             self.set_status(msg, T.WARN if mism else T.MUTED)
@@ -1142,6 +1162,7 @@ class App:
                 t.category, t.category_source = one_offs[t.uid], "learned"
         link(self.file_results)
         infer_rent(self.transactions)
+        apply_tags(self.transactions, self.settings.get("tag_rules", []))
         groups = sorted({r.group for r in self.file_results if r.transactions},
                         key=lambda g: (g == TOP_LEVEL, g.lower()))
         self.group_combo["values"] = [ALL_FOLDERS] + groups
@@ -1175,7 +1196,11 @@ class App:
             if r.transactions:
                 ds = [t.date for t in r.transactions]
                 coverage.append((r.info.kind, r.info.period_start or min(ds), r.info.period_end or max(ds)))
-        self.analysis = analyze(scoped, quality, coverage)
+        self.analysis = analyze(scoped, quality, coverage, budgets=self.settings.get("budgets"))
+        tags = ["All tags"] + sorted({g for t in scoped for g in t.tags})
+        self.tag_combo["values"] = tags
+        if self.tag_filter.get() not in tags:
+            self.tag_filter.set("All tags")
         cats = ["All categories"] + sorted({t.category for t in scoped})
         self.cat_combo["values"] = cats
         if self.cat_filter.get() not in cats:
@@ -1190,6 +1215,9 @@ class App:
         self.render_recurring()
         self.render_folders()
         self.render_files()
+        self.render_budgets()
+        self.render_debt()
+        self.render_rules()
 
     # ================================================================ edits
     def _selected(self):

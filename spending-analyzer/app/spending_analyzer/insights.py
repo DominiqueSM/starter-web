@@ -270,7 +270,7 @@ def _covered(ym: str, spans) -> bool:
     return len(days) >= 0.9 * ((hi - lo).days + 1)
 
 
-def analyze(transactions, data_quality: float = 1.0, coverage=None) -> Analysis:
+def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None) -> Analysis:
     """coverage: optional list of (kind, start_date, end_date), one per statement, used to compare only
     months that the statements cover completely."""
     live = [t for t in transactions if not t.excluded and not t.duplicate]
@@ -386,6 +386,17 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None) -> Analysis:
         cashflow=cashflow, compare=compare,
     )
     a.suggestions = build_suggestions(a, transactions)
+    if budgets:
+        from .planning import complete_months, over_budget
+        ms = complete_months(a)
+        over = over_budget(a, budgets, ms[-1]) if ms else []
+        if over:
+            a.suggestions.insert(0, Suggestion(
+                f"Over budget in {ms[-1]}",
+                "These categories went over the monthly budget you set. Open Budgets to see this month so far.",
+                priority=1, kind="warn", confidence="high",
+                items=[f"{r.category}: spent {money(r.spent)} of {money(r.budget)} ({money(r.spent - r.budget)} over)"
+                       for r in sorted(over, key=lambda r: r.budget - r.spent)]))
     a.potential_monthly_savings = sum(s.monthly_savings for s in a.suggestions)
     return a
 

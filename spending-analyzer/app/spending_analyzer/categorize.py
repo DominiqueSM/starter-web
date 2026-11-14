@@ -272,6 +272,33 @@ class Categorizer:
         with open(self.user_rules_path, "w", encoding="utf-8") as f:
             json.dump(self.user_rules, f, indent=2)
 
+    def _save(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        with open(self.overrides_path, "w", encoding="utf-8") as f:
+            json.dump(self.overrides, f, indent=2, sort_keys=True)
+        with open(self.user_rules_path, "w", encoding="utf-8") as f:
+            json.dump(self.user_rules, f, indent=2)
+
+    def remove_override(self, merchant: str):
+        self.overrides.pop(merchant, None)
+        self._save()
+
+    def remove_rule(self, contains: str):
+        self.user_rules = [r for r in self.user_rules if r.get("contains", "").upper() != contains.upper()]
+        self._save()
+
+    def replace_all(self, overrides: dict, user_rules: list, category_rules: dict | None = None):
+        """Used by restore: replace your choices, and the keyword list if the backup has one."""
+        self.overrides, self.user_rules = dict(overrides), list(user_rules)
+        self._save()
+        if category_rules and category_rules.get("rules"):
+            with open(self.rules_path, "w", encoding="utf-8") as f:
+                json.dump(category_rules, f, indent=2)
+        self.reload()
+
+    def reload(self):
+        self.__init__(self.data_dir)
+
     def set_override(self, merchant: str, category: str):
         self.overrides[merchant] = category
         os.makedirs(self.data_dir, exist_ok=True)
