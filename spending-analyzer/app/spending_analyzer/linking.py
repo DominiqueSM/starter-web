@@ -18,6 +18,63 @@ TRANSFER_WORDS = re.compile(r"TRANSFER|XFER|TFR|SAVINGS|CHECKING|\bSAV\b|\bCHK\b
 P2P_WORDS = re.compile(r"ZELLE|VENMO|CASH ?APP", re.I)
 
 
+# How each bank appears in other banks' transaction descriptions
+BANK_ALIASES = {
+    "Chase": r"CHASE|JPMORGAN|JPM CHASE|JP MORGAN",
+    "Capital One": r"CAPITAL ONE|CAPITALONE|CAP ONE|CAPONE",
+    "Bank of America": r"BANK OF AMERICA|BK OF AMER|BOFA",
+    "Wells Fargo": r"WELLS FARGO",
+    "Citi": r"\bCITI\b|CITIBANK",
+    "Ally": r"\bALLY\b",
+    "Discover": r"DISCOVER BANK|DISCOVER SAV|\bDISCOVER\b",
+    "American Express": r"AMEX|AMERICAN EXPRESS",
+    "U.S. Bank": r"U\.?S\.? BANK",
+    "PNC": r"\bPNC\b", "TD Bank": r"\bTD BANK\b", "USAA": r"\bUSAA\b", "Navy Federal": r"NAVY FED",
+    "SoFi": r"\bSOFI\b", "Chime": r"\bCHIME\b", "Schwab": r"SCHWAB", "Fidelity": r"FIDELITY",
+    "Marcus": r"MARCUS|GOLDMAN SACHS|GS BANK", "Varo": r"\bVARO\b", "Truist": r"TRUIST",
+    "Citizens": r"CITIZENS", "Synchrony": r"SYNCHRONY|SYNCB", "Barclays": r"BARCLAY",
+}
+ANY_BANK = re.compile("|".join(f"(?:{v})" for v in BANK_ALIASES.values()), re.I)
+# Payments to a bank that ARE spending: loans, insurance, fees, cash
+REAL_SPENDING = re.compile(r"AUTO|CARPAY|CAR PAY|LOAN|MORTGAGE|\bMTG\b|LEASE|INSUR|\bINS\b|\bATM\b|\bFEE\b|"
+                           r"INTEREST|FINANCE CHG|OVERDRAFT|PAYROLL|DIR DEP|DIRECT DEP|SALARY|ZELLE|VENMO", re.I)
+SAVINGS_HINT = re.compile(r"SAVINGS|\bSAV\b|\b360\b|MONEY MARKET|\bMMA\b|HIGH YIELD|HYSA|BROKERAGE|INVEST", re.I)
+
+
+def bank_of(account: str) -> str:
+    return next((b for b in BANK_ALIASES if account.startswith(b + " ")), "")
+
+
+def classify_bank_moves(results) -> int:
+    """Money moving between a bank account and another bank is your own money moving, not spending or income
+    (savings at Capital One, paying a card, moving money back). Loans, insurance, fees and cash are excluded."""
+    n = 0
+    for r in results:
+        if r.info.kind == "card":
+            continue
+        own = bank_of(r.info.account_key) or r.info.bank
+        for t in r.transactions:
+            if t.category_source in ("learned", "merchant", "matched"):
+                continue
+            if t.category_source == "keyword" and t.category not in ("Transfers & Payments", "Income", "Other"):
+                continue
+            d = t.description
+            m = ANY_BANK.search(d)
+            if not m or REAL_SPENDING.search(d):
+                continue
+            # a deposit at Chase that just says "Chase" isn't a transfer from another bank
+            if own and re.search(BANK_ALIASES.get(own, "^$"), m.group(0), re.I) and not SAVINGS_HINT.search(d):
+                continue
+            if not t.is_credit and SAVINGS_HINT.search(d):
+                t.category = "Savings & Investments"
+            else:
+                t.category = "Transfers & Payments"
+            t.category_source = "guess"
+            t.note = ("Moved to " if not t.is_credit else "Moved from ") + "another bank - not counted"
+            n += 1
+    return n
+
+
 def _same_account(a, b) -> bool:
     ka, kb = a.info.account_key, b.info.account_key
     if ka and kb:
@@ -85,15 +142,24 @@ def match_transfers(results, window_before=3, window_after=8) -> int:
                 continue
             if i.kind == "card":
                 ok = i.category == "Transfers & Payments" or re.search(r"PAYMENT|PMT|THANK", i.description, re.I)
-            else:   # bank to bank: needs transfer wording on BOTH sides, and never money from a person
-                ok = (bool(TRANSFER_WORDS.search(o.description) and TRANSFER_WORDS.search(i.description))
-                      and not P2P_WORDS.search(i.description))
+            else:   # bank to bank, never money from a person
+                names_other = False
+                bo, bi = bank_of(o.account), bank_of(i.account)
+                if bi and re.search(BANK_ALIASES[bi], o.description, re.I):
+                    names_other = True   # Chase line says "CAPITAL ONE ...", money arrives at Capital One
+                if bo and re.search(BANK_ALIASES[bo], i.description, re.I):
+                    names_other = True   # Capital One line says "Deposit from JPMorgan Chase"
+                both_words = bool(TRANSFER_WORDS.search(o.description) and TRANSFER_WORDS.search(i.description))
+                ok = (names_other or both_words) and not P2P_WORDS.search(i.description)
             if ok and (best is None or abs(gap) < best_gap):
                 best, best_gap = i, abs(gap)
         if best is not None:
             used.add(id(best))
             where = best.account or os.path.basename(os.path.dirname(best.source_file)) or "another account"
-            o.category, o.category_source, o.transfer_match = "Transfers & Payments", "matched", True
+            saved = o.category == "Savings & Investments" or (best.kind != "card" and (
+                best.account_type == "savings" or SAVINGS_HINT.search(best.description + " " + o.description)))
+            o.category = "Savings & Investments" if saved else "Transfers & Payments"
+            o.category_source, o.transfer_match = "matched", True
             o.note = ("Paid to card " if best.kind == "card" else "Moved to ") + where + f" on {best.date}"
             best.category, best.category_source, best.transfer_match = "Transfers & Payments", "matched", True
             best.note = "Received from " + (o.account or "your bank account") + f" on {o.date}"
@@ -102,4 +168,5 @@ def match_transfers(results, window_before=3, window_after=8) -> int:
 
 
 def link(results) -> dict:
-    return {"duplicates": remove_overlap_duplicates(results), "transfers": match_transfers(results)}
+    return {"duplicates": remove_overlap_duplicates(results), "transfers": match_transfers(results),
+            "bank_moves": classify_bank_moves(results)}

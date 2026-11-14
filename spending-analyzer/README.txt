@@ -70,6 +70,10 @@ HOW DOUBLE COUNTING IS AVOIDED
     remembers that person, and from then on their payments lower your spending on bills instead.
     Money you send them is still counted normally.
   * Money moved to savings or investments (Robinhood, Fidelity, Coinbase...) is not spending.
+  * Money moved between your bank and another bank (e.g. Chase -> Capital One savings) is not
+    spending, and money moved back is not new money in. Add both banks' statements and the two
+    sides are matched automatically; transfers into a savings account show as "Saved" on the
+    Cash flow page. Loan payments, insurance and ATM cash to a bank still count as spending.
   * Refunds and returns are subtracted from spending, not counted as money in.
   * "Money in" is every deposit into your bank accounts except transfers between your own accounts
     and refunds - not just paychecks the app recognises.

@@ -19,7 +19,7 @@ from datetime import date, timedelta
 
 from .pdftext import Line
 
-PARSER_VERSION = 4
+PARSER_VERSION = 5
 
 # ---------------------------------------------------------------- data classes
 
@@ -47,6 +47,7 @@ class Transaction:
     duplicate: bool = False
     transfer_match: bool = False
     parsed_credit: bool | None = None   # direction as read from the PDF (before user corrections)
+    account_type: str = ""              # "savings" | "checking" | "" (unknown)
 
     @property
     def is_spending(self) -> bool:
@@ -67,6 +68,7 @@ class StatementInfo:
     recon_detail: str = ""
     balance_checks: int = 0
     balance_fails: int = 0
+    account_type: str = ""            # "savings" | "checking" | ""
 
     @property
     def account_key(self) -> str:
@@ -297,6 +299,10 @@ def _statement_info(lines: list[Line], order_pref: str) -> StatementInfo:
     elif hint == "bank":
         bank += 1
     info.kind = "card" if card > bank else ("bank" if bank > card else "unknown")
+    sav = re.search(r"SAVINGS|MONEY MARKET|360 PERFORMANCE|HIGH[- ]YIELD|\bHYSA\b|SHARE SAVINGS", head)
+    chk = re.search(r"CHECKING|\b360 CHECKING\b", head)
+    if info.kind != "card" and bool(sav) != bool(chk):
+        info.account_type = "savings" if sav else "checking"
 
     for t in texts[:80]:
         for rx in LAST4_RES:
@@ -658,7 +664,7 @@ def _resolve(rows, info: StatementInfo, source_file, fallback_year, diags):
         txs.append(Transaction(
             date=dt, description=r["desc"], amount=r["amount"], is_credit=(r["dir"] == "in"),
             source_file=source_file, year_guessed=guessed, account=info.account_key, kind=info.kind,
-            evidence=r["ev"], balance=r["balance"], page=r["page"]))
+            evidence=r["ev"], balance=r["balance"], page=r["page"], account_type=info.account_type))
     return txs
 
 

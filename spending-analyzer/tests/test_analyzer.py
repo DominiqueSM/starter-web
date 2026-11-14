@@ -223,6 +223,46 @@ class MoneyInVsOut(unittest.TestCase):
         self.assertAlmostEqual(a.compare["money_in"], 3000)
         self.assertEqual(next(t for t in txs if "To Jane" in t.description).category, "Zelle / Venmo / Cash App")
 
+    def _linked(self, files):
+        """files: list of (account_key, kind, [tx...]). Runs categorise + link like the app does."""
+        from types import SimpleNamespace as NS
+        from spending_analyzer.linking import link
+        from spending_analyzer.parser import StatementInfo
+        results = []
+        for acct, kind, txs in files:
+            bank = acct.split(" account")[0].split(" card")[0]
+            info = StatementInfo(kind=kind, bank=bank, last4=acct[-4:])
+            for t in txs:
+                t.account, t.kind, t.source_file = info.account_key, kind, acct + ".pdf"
+            results.append(NS(path=acct + ".pdf", info=info, transactions=txs, group="", duplicates_removed=0))
+        all_txs = [t for r in results for t in r.transactions]
+        Categorizer(tempfile.mkdtemp()).apply(all_txs)
+        link(results)
+        return analyze(all_txs)
+
+    def test_savings_transfer_chase_to_capital_one_is_not_spending(self):
+        chase = [tx("2026-01-01", "ACME CORP PAYROLL PPD", 4000, credit=True),
+                 tx("2026-01-05", "CAPITAL ONE DES:TRANSFER ID:XXXXX4821 INDN:SMITH CO ID:9279744991 PPD", 1000),
+                 tx("2026-01-20", "CAPITAL ONE DES:TRANSFER ID:XXXXX4821 INDN:SMITH", 300, credit=True),  # moved back
+                 tx("2026-01-08", "CAPITAL ONE AUTO CARPAY", 350),                                     # real loan
+                 tx("2026-01-09", "KROGER #622", 120)]
+        a = self._linked([("Chase account \u20269876", "bank", chase)])
+        self.assertAlmostEqual(a.total_spent, 470)            # loan + groceries only
+        self.assertAlmostEqual(a.compare["money_in"], 4000)   # money moved back isn't new money
+
+    def test_matched_when_both_banks_statements_are_present(self):
+        chase = [tx("2026-01-01", "ACME CORP PAYROLL PPD", 4000, credit=True),
+                 tx("2026-01-05", "CAPITAL ONE N.A. DES:CAPITALONE ID:123 PPD", 1000)]
+        c1 = [tx("2026-01-06", "Deposit from JPMorgan Chase Bank, N.A.", 1000, credit=True),
+              tx("2026-01-31", "Monthly Interest Paid", 3.10, credit=True)]
+        for t in c1:
+            t.account_type = "savings"   # read from the statement header ("360 Performance Savings")
+        a = self._linked([("Chase account \u20269876", "bank", chase),
+                          ("Capital One account \u20265555", "bank", c1)])
+        self.assertAlmostEqual(a.total_spent, 0)
+        self.assertAlmostEqual(a.compare["money_in"], 4003.10)
+        self.assertAlmostEqual(sum(r["saved"] for r in a.cashflow), 1000)
+
     def test_partial_months_are_left_out(self):
         # checking statement ends Jan 15 (one paycheck), card statement covers all of January
         txs = [tx("2026-01-01", "ACME PAYROLL", 2000, credit=True), tx("2026-01-03", "KROGER", 100),
