@@ -149,6 +149,25 @@ class Units(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(canonical(raw)[0], want)
 
+    def test_rent_payee_with_changing_reference_code(self):
+        names = {canonical(d)[0] for d in [
+            "OPENHOUSETEXAS 7YR06G", "OPENHOUSETEXAS 9XK22B",
+            "OPENHOUSETEXAS DES:WEB PMTS ID:7YR06G INDN:JOHN SMITH CO ID:1234567890 WEB",
+            "Online Payment 4432178 To OPENHOUSETEXAS 7YR06G",
+            "ORIG CO NAME:OPENHOUSETEXAS ORIG ID:123 DESC DATE:010226 CO ENTRY DESCR:RENT SEC:WEB"]}
+        self.assertEqual(names, {"Openhousetexas"})
+        for raw, want in [("24 HOUR FITNESS", "24 Hour Fitness"), ("PATILLA BARBERSHOP DALLAS TX", "Patilla Barbershop")]:
+            self.assertEqual(canonical(raw)[0], want)
+
+    def test_description_contains_rule(self):
+        c = Categorizer(tempfile.mkdtemp())
+        c.add_rule("openhousetexas", "Housing")
+        txs = [tx("2026-01-01", "OPENHOUSETEXAS 7YR06G", 2490), tx("2026-02-01", "OPENHOUSETEXAS 9XK22B", 2490),
+               tx("2026-02-03", "KROGER", 50)]
+        c.apply(txs)
+        self.assertEqual([t.category for t in txs], ["Housing", "Housing", "Groceries"])
+        self.assertEqual(Categorizer(c.data_dir).user_rules[0]["contains"], "OPENHOUSETEXAS")  # saved
+
     def test_amounts(self):
         self.assertEqual(parse_amount("(1,234.56)")[:2], (1234.56, True))
         self.assertEqual(parse_amount("45.00-")[:2], (45.0, True))

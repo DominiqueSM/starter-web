@@ -89,8 +89,13 @@ HOW DOUBLE COUNTING IS AVOIDED
 
 FIXING THINGS (the app remembers your fixes)
 --------------------------------------------
-  * Wrong category: double-click the transaction (or select several > "Set category...").
-    Leave "Use this for every transaction from these companies" ticked to apply it everywhere.
+  * Wrong category: double-click the transaction (or select several > "Set category...") and choose
+    what it applies to:
+      - every transaction from that company (remembered), or
+      - every transaction whose description contains some text you type, e.g. OPENHOUSETEXAS -
+        handy when the bank adds a code that changes each time ("OPENHOUSETEXAS 7YR06G"), or
+      - only the selected transaction(s).
+    Your text rules are saved in my_rules.json in the .spending_analyzer folder.
     In the Category column:  ?  = broad guess,  * = your choice,  <-> = matched transfer.
   * Not real spending (e.g. moving money between your own accounts): select > "Exclude".
   * Refund shown as spending, or the reverse: select > "Flip in/out".

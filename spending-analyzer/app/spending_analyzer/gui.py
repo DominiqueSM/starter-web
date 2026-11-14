@@ -1203,26 +1203,51 @@ class App:
         cb.pack(anchor="w")
         tk.Label(body, text="Pick one, or type a new category name.", bg=T.SURFACE, fg=T.MUTED,
                  font=T.FONTS["tiny"]).pack(anchor="w", pady=(4, 8))
-        remember = tk.BooleanVar(value=True)
-        ttk.Checkbutton(body, text="Use this for every transaction from these companies (remembered)",
-                        variable=remember).pack(anchor="w")
+        tk.Label(body, text="Apply to", bg=T.SURFACE, fg=T.TEXT, font=T.FONTS["bold"]).pack(anchor="w", pady=(6, 2))
+        scope = tk.StringVar(value="company")
+        ttk.Radiobutton(body, text=f"Every transaction from {merchants[0] if len(merchants) == 1 else 'these companies'}"
+                                   " (remembered)", variable=scope, value="company").pack(anchor="w")
+        crow = tk.Frame(body, bg=T.SURFACE)
+        crow.pack(anchor="w", fill="x")
+        ttk.Radiobutton(crow, text="Every transaction whose description contains", variable=scope,
+                        value="contains").pack(side="left")
+        first_word = (sel[0].description.split() or [""])[0]
+        contains = tk.StringVar(value=first_word)
+        ent = ttk.Entry(body, textvariable=contains, width=30)
+        ent.pack(anchor="w", padx=(24, 0), pady=(2, 0))
+        count_lbl = tk.Label(body, text="", bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["tiny"])
+        count_lbl.pack(anchor="w", padx=(24, 0))
+
+        def recount(*_):
+            txt = contains.get().strip().upper()
+            n = sum(1 for t in self.transactions if txt and txt in t.description.upper()) if txt else 0
+            count_lbl.configure(text=f"matches {n} transaction(s) \u00B7 remembered for future statements")
+        contains.trace_add("write", lambda *a: (scope.set("contains"), recount()))
+        recount()
+        ttk.Radiobutton(body, text="Only the selected transaction(s)", variable=scope, value="only").pack(
+            anchor="w", pady=(4, 0))
 
         def ok():
             c = var.get().strip()
             if not c:
                 return
-            if remember.get():
+            how = scope.get()
+            if how == "company":
                 for m in merchants:
                     self.cat.set_override(m, c)
-                win.destroy()
-                self.rebuild()
+            elif how == "contains":
+                txt = contains.get().strip()
+                if len(txt) < 3:
+                    messagebox.showwarning(APP_NAME, "Type at least 3 characters to match on.", parent=win)
+                    return
+                self.cat.add_rule(txt, c)
             else:
                 one_offs = self.settings.setdefault("tx_categories", {})
                 for t in sel:
                     one_offs[t.uid] = c
                 self._save_settings()
-                win.destroy()
-                self.rebuild()
+            win.destroy()
+            self.rebuild()
 
         btns = tk.Frame(body, bg=T.SURFACE)
         btns.pack(fill="x", pady=(16, 0))

@@ -214,6 +214,8 @@ BILLPAY_RE = re.compile(r"^((ONLINE|MOBILE|WEB|RECURRING)\s+)?(BILL\s+)?(PAYMENT
                         r"(TO|FROM)\s+|^ZELLE\s+(PAYMENT\s+)?(TO|FROM)\s+")
 STATES = set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC "
              "ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split())
+ACH_NOISE = {"PPD", "WEB", "CCD", "ACH", "PMTS", "PMT", "DES", "INDN", "ORIG", "SEC", "TEL", "ID", "CO",
+             "ENTRY", "DESCR", "RECURRING", "AUTOPAY", "BILL", "EPAY"}
 STOP_TOKENS = {"THE", "INC", "LLC", "CO", "CORP", "COM", "WWW", "HTTPS", "HTTP", "USA", "US"}
 
 
@@ -239,6 +241,11 @@ def fallback_key(desc: str) -> str:
     if m:   # "Zelle Transfer Conf# abc; Doe, Jane" -> "Jane Doe"
         parts = [p.strip() for p in m.group(2).split(",")]
         s = " ".join(reversed(parts)) if len(parts) == 2 else m.group(2)
+    # Bank transfer (ACH) layouts: keep the payee name, drop the bank's extra fields
+    m = re.search(r"ORIG CO NAME\s*:?\s*(.+?)\s+(ORIG ID|CO ENTRY|DESC DATE|SEC\s*:|IND ID|IND NAME|$)", s)
+    if m:
+        s = m.group(1)
+    s = re.split(r"\s+(?:DES|ID|INDN|CO ID|ORIG ID|PPD ID|WEB ID|CCD ID|TRN|REF|CONF|TRACE)\s*[:#]", s, maxsplit=1)[0]
     s = BILLPAY_RE.sub("", s)
     for _ in range(3):
         s = NOISE_RE.sub("", s).strip(" *")
@@ -251,8 +258,13 @@ def fallback_key(desc: str) -> str:
     s = re.sub(r"\bFROM\b", " ", s) if s.startswith("ZELLE") or s.startswith("VENMO") else s
     s = re.sub(r"^(ZELLE|VENMO|CASH APP)\s+(?=[A-Z])(?!CASHOUT)", "", s)
     out = []
-    for tok in s.split():
+    toks = s.split()
+    for tok in toks:
         if tok in STOP_TOKENS or tok in out:
+            continue
+        # reference codes that change every payment ("7YR06G") and ACH filler words
+        if len(toks) > 1 and ((len(tok) >= 3 and re.search(r"\d", tok) and re.search(r"[A-Z]", tok))
+                              or tok in ACH_NOISE):
             continue
         out.append(tok)
     while len(out) > 1 and out[-1] in STATES:

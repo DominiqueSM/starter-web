@@ -173,6 +173,9 @@ class Categorizer:
             weak = [k for k in ks if k.strip().upper() in WEAK_KEYWORDS]
             self._compiled.append((c, _keywords_regex(strong), _keywords_regex(weak)))
         self.overrides: dict[str, str] = self._load_json(self.overrides_path, {})
+        # Your own "description contains ..." rules; checked before everything except per-company choices
+        self.user_rules_path = os.path.join(data_dir, "my_rules.json")
+        self.user_rules: list = self._load_json(self.user_rules_path, [])
 
     @staticmethod
     def _load_json(path, default):
@@ -225,12 +228,16 @@ class Categorizer:
     def categorize(self, desc: str, merchant: str, brand_cat: str | None = None,
                    money_in: bool = False) -> tuple[str, str]:
         """Return (category, source). Source: learned | merchant | keyword | guess | none."""
+        d = desc.upper()
         if merchant in self.overrides:
             o = self.overrides[merchant]
             # "paid back" only describes money coming in; payments you send that person are categorised normally
             if not (o == REIMBURSEMENT and not money_in):
                 return o, "learned"
-        d = desc.upper()
+        for rule in self.user_rules:
+            text, cat = rule.get("contains", "").upper(), rule.get("category", "")
+            if text and cat and text in d and not (cat == REIMBURSEMENT and not money_in):
+                return cat, "learned"
         # Transfers/income keywords beat merchant names ("Payment to Chase card" stays a transfer)
         # Zelle/Venmo first: "Zelle Payment From Jane" is money from a person, not a card payment
         if re.search(r"\b(ZELLE|VENMO|CASH ?APP|SQUARE CASH|APPLE CASH)\b", d):
@@ -255,6 +262,15 @@ class Categorizer:
             if weak.search(d):
                 return cat, "guess"
         return "Other", "none"
+
+    def add_rule(self, contains: str, category: str):
+        """'Every transaction whose description contains <text> is <category>'. Newest rule wins."""
+        contains = contains.strip().upper()
+        self.user_rules = [r for r in self.user_rules if r.get("contains", "").upper() != contains]
+        self.user_rules.insert(0, {"contains": contains, "category": category})
+        os.makedirs(self.data_dir, exist_ok=True)
+        with open(self.user_rules_path, "w", encoding="utf-8") as f:
+            json.dump(self.user_rules, f, indent=2)
 
     def set_override(self, merchant: str, category: str):
         self.overrides[merchant] = category

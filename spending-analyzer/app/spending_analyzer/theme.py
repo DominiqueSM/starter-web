@@ -99,6 +99,8 @@ def setup(root: tk.Tk):
     s.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor="#E5E7EB", bordercolor=BG,
                 lightcolor=ACCENT, darkcolor=ACCENT, thickness=6)
     s.configure("TCheckbutton", background=SURFACE, font=FONTS["body"])
+    s.configure("TRadiobutton", background=SURFACE, font=FONTS["body"])
+    s.map("TRadiobutton", background=[("active", SURFACE)])
     s.map("TCheckbutton", background=[("active", SURFACE)])
 
 
