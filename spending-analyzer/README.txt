@@ -44,18 +44,24 @@ repository > Actions tab > "Spending Analyzer - test and build" > latest run > A
   2. The analysis runs straight away (click Analyze to run it again).
   3. Pages (left side):
        Overview         totals, where the money goes, monthly chart (hover for details)
-       Cash flow        money in vs. spent, month by month, with exactly what was counted
+       Cash flow        money in vs. spent, month by month, your savings rate over the last 3
+                        full months, and exactly what was counted
                         and what wasn't (card payments, transfers, savings). Start here if a
                         total looks wrong.
        Cut back         ranked suggestions with estimated savings and confidence
+       Needs review     what the app wasn't sure about, one line per company (broad guesses,
+                        no category, likely rent, money moved to another bank, possible card
+                        payments). Approve confirms the category shown and the app remembers it;
+                        Set category picks another. The sidebar shows how many are left.
        Budgets          a monthly limit per category: spent vs. budget, left to spend (and per
                         day for the current month), plus spending by tag
        Transactions     everything found; search, filter by category or tag, fix categories, tag
        Recurring        subscriptions / bills & loans / regular spending, one line per company
        Debt payoff      when you'll be debt-free, and what paying extra each month saves
        By folder        each subfolder side by side
-       Files & checks   what was read from each file, whether it adds up, and a
-                        line-by-line preview showing exactly what was read or skipped and why
+       Files & checks   what was read from each file, whether it adds up, a line-by-line
+                        preview showing what was read or skipped and why, and a warning when
+                        statements are missing (e.g. no Chase card statement for March)
        Rules & backup   everything you've taught the app (categories, rules, tags, exclusions...)
                         with Delete / Change category, and Back up / Restore
   Try it first with the "sample-statements (fake data)" folder (the locked sample's password is: secret).
@@ -133,8 +139,10 @@ HOW DOUBLE COUNTING IS AVOIDED
   * Refunds and returns are subtracted from spending, not counted as money in.
   * "Money in" is every deposit into your bank accounts except transfers between your own accounts
     and refunds - not just paychecks the app recognises.
-  * Spending is compared with money in only for whole months covered by your statements, so a
-    month with a full month of card purchases but half a month of checking isn't compared.
+  * Spending is compared with money in only for whole months covered by your statements: every
+    account with statements around that month must cover it. So a month with a full month of card
+    purchases but half a month of checking, or a missing checking statement, isn't compared (and
+    the missing statement is flagged on Files & checks and Cut back).
 
 
 FIXING THINGS (the app remembers your fixes)

@@ -67,6 +67,7 @@ class Analysis:
     refunds: float = 0.0        # refunds/returns, subtracted from spending
     cashflow: list = field(default_factory=list)   # one dict per month
     compare: dict | None = None                    # spending vs money in over months covered by bank statements
+    savings: dict | None = None                    # savings rate over the last 3 full months
 
 
 def _ym(d: date) -> str:
@@ -234,6 +235,20 @@ def find_recurring(spending) -> list[Recurring]:
 
 # ------------------------------------------------------------------ main
 
+def _savings(cashflow, compare):
+    """(money in - spent) / money in over the last 3 full months that have bank statements."""
+    for r in cashflow:
+        r["rate"] = (r["money_in"] - r["spent"]) / r["money_in"] if r["has_bank"] and r["money_in"] > 0 else None
+    if not compare:
+        return None
+    months = compare["months"][-3:]
+    rows = [r for r in cashflow if r["month"] in months]
+    inn, out = sum(r["money_in"] for r in rows), sum(r["spent"] for r in rows)
+    if inn <= 0:
+        return None
+    return {"rate": (inn - out) / inn, "months": months, "money_in": inn, "spent": out, "saved": inn - out}
+
+
 REFUND_RE = re.compile(r"\b(REFUND|RETURN|REVERSAL|REVERSED|CREDIT ADJ|ADJUSTMENT|CHARGEBACK|DISPUTE|RETURNED)\b", re.I)
 NOT_MONEY_IN = {"Transfers & Payments", "Savings & Investments"}
 
@@ -270,7 +285,7 @@ def _covered(ym: str, spans) -> bool:
     return len(days) >= 0.9 * ((hi - lo).days + 1)
 
 
-def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None) -> Analysis:
+def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None, gaps=None) -> Analysis:
     """coverage: optional list of (kind, start_date, end_date), one per statement, used to compare only
     months that the statements cover completely."""
     live = [t for t in transactions if not t.excluded and not t.duplicate]
@@ -357,17 +372,24 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
                          "card_payments": r["card_payments"], "transfers": r["transfers"], "saved": r["saved"],
                          "has_bank": ym in bank_months, "partial": False})
     if coverage:
-        bank_spans = [(s_, e_) for k, s_, e_ in coverage if k != "card"]
-        card_spans = [(s_, e_) for k, s_, e_ in coverage if k == "card"]
-        card_lo = min((s_ for s_, _ in card_spans), default=None)
-        card_hi = max((e_ for _, e_ in card_spans), default=None)
+        # coverage: (kind, start, end) or (kind, start, end, account). A month is compared only when every
+        # account with statements around that month covers it (a missing checking statement makes its month
+        # incomplete even if another bank account's statement covers it), and at least one bank account does.
+        accts = defaultdict(list)
+        for item in coverage:
+            k, s_, e_ = item[:3]
+            acct = item[3] if len(item) > 3 and item[3] else ("card" if k == "card" else "bank")
+            accts[(acct, k == "card")].append((s_, e_))
         for c in cashflow:
-            full_bank = _covered(c["month"], bank_spans)
             lo, hi = _month_days(c["month"])
-            in_card_range = card_lo is not None and hi >= card_lo and lo <= card_hi
-            full_card = not in_card_range or _covered(c["month"], card_spans)
-            c["has_bank"] = c["has_bank"] and full_bank and full_card
-            c["partial"] = not full_bank and c["month"] in bank_months or (full_bank and not full_card)
+            full_bank = any(not is_card and _covered(c["month"], sp) for (a, is_card), sp in accts.items())
+            complete = True
+            for (a, is_card), sp in accts.items():
+                a_lo, a_hi = min(x for x, _ in sp), max(y for _, y in sp)
+                if hi >= a_lo and lo <= a_hi and not _covered(c["month"], sp):
+                    complete = False
+            c["has_bank"] = c["has_bank"] and full_bank and complete
+            c["partial"] = not c["has_bank"] and c["month"] in bank_months
     compare = None
     cmp_rows = [c for c in cashflow if c["has_bank"] and (c["spent"] > 0 or c["money_in"] > 0)]
     if cmp_rows:
@@ -383,9 +405,19 @@ def analyze(transactions, data_quality: float = 1.0, coverage=None, budgets=None
         top_merchants=sorted(((m, v[0], v[1]) for m, v in merch.items()), key=lambda x: -x[1])[:25],
         recurring=find_recurring(spending), suggestions=[], potential_monthly_savings=0.0,
         data_quality=data_quality, money_in=sum(t.amount for t in money_in_txs), refunds=refund_total,
-        cashflow=cashflow, compare=compare,
+        cashflow=cashflow, compare=compare, savings=_savings(cashflow, compare),
     )
     a.suggestions = build_suggestions(a, transactions)
+    if gaps:
+        a.suggestions.insert(0, Suggestion(
+            "Some statements seem to be missing",
+            "There are gaps between the statements of these accounts. Spending and money in for those days "
+            "aren't counted (the Cash flow comparison leaves out months that aren't fully covered). Add the "
+            "missing statements to the folder for complete numbers.",
+            priority=1, kind="warn", confidence="high",
+            items=[f"{g.account}: {g.start:%b %d, %Y} to {g.end:%b %d, %Y} "
+                   f"(about {g.months} statement{'s' if g.months != 1 else ''}, between {g.before} and {g.after})"
+                   for g in gaps]))
     if budgets:
         from .planning import complete_months, over_budget
         ms = complete_months(a)
@@ -463,7 +495,9 @@ def build_suggestions(a: Analysis, all_txs) -> list[Suggestion]:
             S.append(Suggestion(
                 "Spending vs. money coming in",
                 f"You spend {ratio:.0%} of what comes in ({money(out)} of {money(inn)} a month over {n} month(s)), "
-                f"leaving about {money(inn - out)}/month.{left} A common target is spending under 80%.",
+                f"leaving about {money(inn - out)}/month.{left} "
+                + (f"Savings rate over the last {len(a.savings['months'])} full month(s): {a.savings['rate']:.0%}. "
+                   if a.savings else "") + "A common target is saving at least 20%.",
                 priority=3, kind="info", confidence=_confidence(a, "medium"), items=items))
 
     # 2. Fees & interest: fully avoidable

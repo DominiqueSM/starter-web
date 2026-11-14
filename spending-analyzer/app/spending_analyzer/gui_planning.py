@@ -10,6 +10,7 @@ from datetime import date
 from tkinter import filedialog, messagebox, ttk
 
 from . import backup
+from .checks import needs_review
 from . import theme as T
 from .insights import money
 from .planning import (Debt, budget_rows, debts_from_statements, left_to_spend, month_label, simulate,
@@ -626,3 +627,101 @@ class PlanningPages:
         self._save_settings()
         self.rebuild()
         self.set_status("Backup restored.", T.GOOD)
+
+    # ================================================================ needs review
+    def _build_review(self, page):
+        top = tk.Frame(page, bg=T.BG)
+        top.pack(fill="x", pady=(0, 10))
+        T.Button(top, "Approve", self.approve_review, style="primary").pack(side="left")
+        T.Button(top, "Set category\u2026", self.review_set_category).pack(side="left", padx=6)
+        T.Button(top, "Show transactions", self._review_drill).pack(side="left")
+        self.review_sum = tk.Label(top, text="", bg=T.BG, fg=T.TEXT, font=T.FONTS["bold"])
+        self.review_sum.pack(side="right")
+        outer, self.review_tree = self._table(page, [
+            ("Company", "Company", 200, "w", False), ("Why", "Why it's here", 260, "w", False),
+            ("Proposed", "Category", 190, "w", False), ("Count", "Transactions", 100, "center", False),
+            ("Total", "Total", 100, "e", False), ("Example", "Example", 300, "w", True)])
+        outer.pack(fill="both", expand=True)
+        self.review_tree.bind("<Double-1>", self._review_drill)
+        tk.Label(page, text="Approve confirms the category shown (select rows first, or approve everything listed; "
+                            "rows with no category are skipped, use Set category for those); "
+                            "the app remembers it for that company and stops asking. Set category picks a different "
+                            "one. Approved choices are on Rules & backup, where you can undo them.",
+                 bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], wraplength=1000, justify="left").pack(anchor="w", pady=(8, 0))
+
+    def render_review(self):
+        tv = self.review_tree
+        tv.delete(*tv.get_children())
+        self._review_index = {}
+        items = needs_review(self._scoped()) if self.transactions else []
+        for i, it in enumerate(items):
+            iid = str(i)
+            self._review_index[iid] = it
+            tags = ["warn"] if it.reason.startswith("Possible card payment") else []
+            if i % 2:
+                tags.append("odd")
+            tv.insert("", "end", iid=iid, tags=tags, values=(
+                it.merchant, it.reason, "\u2013 (pick one)" if it.reason == "No category" else it.proposed, it.count,
+                ("+" if it.money_in else "") + f"{it.total:,.2f}", it.example))
+        n = len(items)
+        self.review_sum.configure(text=f"{n} to review \u00B7 {sum(i.count for i in items)} transactions" if n else
+                                  "Nothing to review \u2713", fg=T.TEXT if n else T.GOOD)
+        row, bar, lbl = self.nav["review"]
+        icon = next(ic for k, _, ic, _ in self.PAGES if k == "review")
+        lbl.configure(text=f"{icon}   Needs review" + (f"  ({n})" if n else ""))
+
+    def _review_selected(self, all_if_none=False):
+        sel = [self._review_index[i] for i in self.review_tree.selection() if i in getattr(self, "_review_index", {})]
+        if not sel and all_if_none:
+            sel = list(getattr(self, "_review_index", {}).values())
+        return sel
+
+    def approve_review(self):
+        picked = bool(self.review_tree.selection())
+        items = self._review_selected(all_if_none=True)
+        if not items:
+            return
+        if not picked and not messagebox.askyesno(
+                self.APP_NAME, f"Approve all {len(items)} rows with the category shown? (Select rows first to "
+                               "approve only some.)"):
+            return
+        ok = [it for it in items if it.reason != "No category"]
+        skipped = len(items) - len(ok)
+        for it in ok:
+            self.cat.set_override(it.merchant, it.proposed)
+        self.rebuild()
+        msg = f"Approved {len(ok)} \u00B7 remembered for those companies."
+        if skipped:
+            msg += f" {skipped} with no category skipped: use Set category for those."
+        self.set_status(msg, T.GOOD if ok else T.WARN)
+
+    def review_set_category(self):
+        items = self._review_selected()
+        if not items:
+            messagebox.showinfo(self.APP_NAME, "Select one or more rows first.")
+            return
+        win, body = self._dialog("Set category")
+        cv, cw = self._field(body, f"Category for {len(items)} compan{'y' if len(items) == 1 else 'ies'}",
+                             items[0].proposed, values=self.cat.all_categories(),
+                             hint="Remembered for these companies; undo it on Rules & backup.")
+
+        def ok():
+            c = cv.get().strip()
+            if not c:
+                return
+            for it in items:
+                self.cat.set_override(it.merchant, c)
+            win.destroy()
+            self.rebuild()
+        self._finish_dialog(win, body, ok, cw)
+
+    def _review_drill(self, e=None):
+        items = self._review_selected()
+        if items:
+            self.search_var.set(items[0].merchant)
+            self.cat_filter.set("All categories")
+            self.tag_filter.set("All tags")
+            self.show_credits.set(True)
+            self.show_hidden.set(True)
+            self.render_transactions()
+            self.show_page("transactions")

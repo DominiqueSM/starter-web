@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from . import theme as T
 from .categorize import NON_SPENDING, Categorizer, infer_rent
+from .checks import missing_statements
 from .extract import parse_file, process_folder
 from .insights import analyze, money, summarize_groups
 from .linking import link
@@ -34,6 +35,7 @@ PAGES = [
     ("overview", "Overview", "◉", "Where your money goes"),
     ("cashflow", "Cash flow", "⇅", "Money in vs. money out, month by month, and exactly what was counted"),
     ("insights", "Cut back", "★", "Ranked ideas with estimated savings"),
+    ("review", "Needs review", "⚐", "What the app wasn't sure about, one line per company"),
     ("budgets", "Budgets", "◔", "Monthly limits per category, and spending by tag"),
     ("transactions", "Transactions", "≡", "Everything found in your statements"),
     ("recurring", "Recurring", "⟳", "Subscriptions, bills and regular payments, one line per company"),
@@ -51,6 +53,7 @@ DIAG_STYLE = {"transaction": ("✓", T.GOOD), "continuation": ("+", T.INFO), "he
 
 class App(PlanningPages):
     APP_NAME = APP_NAME
+    PAGES = PAGES
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -204,6 +207,7 @@ class App(PlanningPages):
         self._build_budgets(self.pages["budgets"])
         self._build_debt(self.pages["debt"])
         self._build_rules(self.pages["rules"])
+        self._build_review(self.pages["review"])
 
     def show_page(self, key):
         self.page = key
@@ -504,12 +508,13 @@ class App(PlanningPages):
                  bg=T.BG, fg=T.MUTED, font=T.FONTS["small"], justify="left", anchor="w",
                  wraplength=1000).grid(row=1, column=0, sticky="ew", pady=(10, 8))
         outer, self.cf_tree = self._table(page, [
-            ("Month", "Month", 80, "w", False), ("In", "Money in", 90, "e", False),
-            ("Pay", "of which pay", 95, "e", False), ("Spent", "Spent", 90, "e", False),
-            ("Cards", "on cards", 80, "e", False), ("Bank", "from bank", 85, "e", False),
-            ("Net", "Left over", 90, "e", False), ("Refunds", "Refunds/paid back", 120, "e", False),
-            ("CardPay", "Card pmts*", 85, "e", False), ("Transfers", "Transfers*", 85, "e", False),
-            ("Saved", "Saved*", 75, "e", False), ("Note", "", 100, "w", True)])
+            ("Month", "Month", 72, "w", False), ("In", "Money in", 85, "e", False),
+            ("Pay", "of which pay", 88, "e", False), ("Spent", "Spent", 85, "e", False),
+            ("Cards", "on cards", 75, "e", False), ("Bank", "from bank", 78, "e", False),
+            ("Net", "Left over", 85, "e", False), ("Rate", "Saved %", 66, "e", False),
+            ("Refunds", "Refunds", 70, "e", False), ("CardPay", "Card pmts*", 80, "e", False),
+            ("Transfers", "Transfers*", 80, "e", False), ("Saved", "Savings*", 72, "e", False),
+            ("Note", "", 90, "w", True)])
         outer.grid(row=2, column=0, sticky="nsew")
         bottom = tk.Frame(page, bg=T.BG)
         bottom.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
@@ -555,16 +560,19 @@ class App(PlanningPages):
             n = len(c["months"])
             inn, out = c["money_in"] / n, c["spent"] / n
             for label, val, col in [("Money in / month", money(inn), T.TEXT), ("Spent / month", money(out), T.TEXT),
-                                    ("Left over / month", money(inn - out), T.GOOD if inn >= out else T.BAD)]:
+                                    ("Left over / month", money(inn - out), T.GOOD if inn >= out else T.BAD)] + (
+                    [(f"Savings rate · last {len(a.savings['months'])} full mo.", f"{a.savings['rate']:.0%}",
+                      T.GOOD if a.savings["rate"] >= 0.2 else (T.WARN if a.savings["rate"] >= 0 else T.BAD))]
+                    if a.savings else []):
                 box = tk.Frame(row, bg=T.SURFACE)
-                box.pack(side="left", padx=(0, 48))
+                box.pack(side="left", padx=(0, 36))
                 tk.Label(box, text=label.upper(), bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["tiny"] + ("bold",)).pack(anchor="w")
                 tk.Label(box, text=val, bg=T.SURFACE, fg=col, font=T.FONTS["kpi"]).pack(anchor="w")
             note = f"Compared over {n} month(s): {c['months'][0]} to {c['months'][-1]}"
             if c["left_out"]:
                 note += f" · {len(c['left_out'])} partly covered month(s) left out"
-            tk.Label(row, text=note, bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["small"], justify="left",
-                     wraplength=360).pack(side="right")
+            tk.Label(self.cf_summary, text=note, bg=T.SURFACE, fg=T.MUTED, font=T.FONTS["small"],
+                     anchor="w").pack(anchor="w", pady=(8, 0))
         else:
             tk.Label(row, text="No bank statements found, so there's no money-in to compare with. Add your "
                                "checking account statements.", bg=T.SURFACE, fg=T.WARN, font=T.FONTS["body"]).pack(anchor="w")
@@ -579,8 +587,8 @@ class App(PlanningPages):
             net = r["money_in"] - r["spent"]
             self.cf_tree.insert("", "end", tags=tags, values=(
                 r["month"], f(r["money_in"]), f(r["income"]), f(r["spent"]), f(r["spent_card"]), f(r["spent_bank"]),
-                f"{net:,.2f}" if r["has_bank"] else "", f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]),
-                f(r["saved"]), note))
+                f"{net:,.2f}" if r["has_bank"] else "", f"{r['rate']:.0%}" if r.get("rate") is not None else "",
+                f(r["refunds"]), f(r["card_payments"]), f(r["transfers"]), f(r["saved"]), note))
         from collections import defaultdict as dd
         from .insights import NOT_MONEY_IN, _is_refund
         live = [t for t in self._scoped() if not t.excluded and not t.duplicate]
@@ -890,8 +898,9 @@ class App(PlanningPages):
         page.columnconfigure(0, weight=1)
         top = tk.Frame(page, bg=T.BG)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        tk.Label(top, text="Select a file to see how each line was read.", bg=T.BG, fg=T.MUTED,
-                 font=T.FONTS["small"]).pack(side="left")
+        self.files_note = tk.Label(top, text="Select a file to see how each line was read.", bg=T.BG, fg=T.MUTED,
+                                   font=T.FONTS["small"], justify="left", anchor="w")
+        self.files_note.pack(side="left")
         self.pw_btn = T.Button(top, "Enter password…", self.ask_password_selected)
         self.pw_btn.pack(side="right")
         T.Button(top, "Include / skip file", self.toggle_include_file).pack(side="right", padx=8)
@@ -926,6 +935,15 @@ class App(PlanningPages):
         self.preview.configure(state="disabled")
 
     def render_files(self):
+        gaps = getattr(self, "gaps", [])
+        if gaps:
+            shown = "\n".join(f"⚠ Missing: {g.account}, {g.start:%b %d, %Y} – {g.end:%b %d, %Y} "
+                              f"(about {g.months} statement{'s' if g.months != 1 else ''})" for g in gaps[:4])
+            more = f"\n…and {len(gaps) - 4} more (see Cut back)" if len(gaps) > 4 else ""
+            self.files_note.configure(text=shown + more, fg=T.WARN, font=T.FONTS["bold"])
+        else:
+            self.files_note.configure(text="No gaps between statements. Select a file to see how each line was read.",
+                                      fg=T.MUTED, font=T.FONTS["small"])
         tv = self.file_tree
         tv.delete(*tv.get_children())
         self._file_index = {}
@@ -1195,8 +1213,10 @@ class App(PlanningPages):
         for r in self._scoped_files():
             if r.transactions:
                 ds = [t.date for t in r.transactions]
-                coverage.append((r.info.kind, r.info.period_start or min(ds), r.info.period_end or max(ds)))
-        self.analysis = analyze(scoped, quality, coverage, budgets=self.settings.get("budgets"))
+                coverage.append((r.info.kind, r.info.period_start or min(ds), r.info.period_end or max(ds),
+                                 r.info.account_key or f"{r.group}|{r.info.kind}"))
+        self.gaps = missing_statements(self._scoped_files())
+        self.analysis = analyze(scoped, quality, coverage, budgets=self.settings.get("budgets"), gaps=self.gaps)
         tags = ["All tags"] + sorted({g for t in scoped for g in t.tags})
         self.tag_combo["values"] = tags
         if self.tag_filter.get() not in tags:
@@ -1218,6 +1238,7 @@ class App(PlanningPages):
         self.render_budgets()
         self.render_debt()
         self.render_rules()
+        self.render_review()
 
     # ================================================================ edits
     def _selected(self):
